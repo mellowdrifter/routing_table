@@ -14,12 +14,13 @@ type node struct {
 type rib struct {
 	root     *node
 	isPrefix bool
-	mu       sync.RWMutex
+	mu       *sync.RWMutex
 }
 
 func GetNewRib() rib {
 	return rib{
 		root: &node{},
+		mu:   &sync.RWMutex{},
 	}
 }
 
