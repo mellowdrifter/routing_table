@@ -8,14 +8,13 @@ import (
 	"inet.af/netaddr"
 )
 
-const MAX = 256
-
 type node struct {
 	mask     uint8
 	children [2]*node
 }
 
 type Rib struct {
+	//TODO: ipv4 and ipv6 will each have their own roots
 	root *node
 	mu   *sync.RWMutex
 }
@@ -28,16 +27,7 @@ func GetNewRib() Rib {
 }
 
 func (r *Rib) PrintRib() {
-	printRib(r.root)
-}
-
-func printRib(node *node) {
-	if node == nil {
-		return
-	}
-	for i := 0; i < MAX; i++ {
-		printRib(node.children[i])
-	}
+	// TODO: figure out how to print the rib really
 }
 
 // Insert a prefix into the rib
@@ -45,6 +35,7 @@ func (r *Rib) Insert(prefix netaddr.IPPrefix) {
 	fmt.Printf("inserting %s\n", prefix.String())
 	currentNode := r.root
 	addr := prefix.IP().As4()
+	mask := prefix.Bits()
 	var bitCount uint8
 	// <3 because we really don't care about the last octet as we won't store anything > 24
 	for i := 0; i < 3; i++ {
@@ -59,7 +50,7 @@ func (r *Rib) Insert(prefix netaddr.IPPrefix) {
 			}
 			currentNode = currentNode.children[bit]
 			bitCount++
-			if bitCount == prefix.Bits() {
+			if bitCount == mask {
 				currentNode.mask = bitCount
 				fmt.Printf("Reached %d bits, so stopping\n", bitCount)
 				return
@@ -99,16 +90,6 @@ func (r *Rib) Search(prefix netaddr.IP) *netaddr.IPPrefix {
 	thing := netaddr.IPFrom4(found)
 	final := netaddr.IPPrefixFrom(thing, currentNode.children[0].mask)
 	return &final
-}
-
-func getMaxUint8(nums []uint8) uint8 {
-	var max uint8
-	for _, v := range nums {
-		if v > max {
-			max = v
-		}
-	}
-	return max
 }
 
 // intToBinBitwise will take a uint8 and return a slice
