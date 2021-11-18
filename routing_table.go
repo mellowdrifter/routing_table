@@ -12,23 +12,22 @@ const MAX = 256
 
 type node struct {
 	mask     uint8
-	val      uint8
-	children [256]*node
+	children [2]*node
 }
 
-type rib struct {
+type Rib struct {
 	root *node
 	mu   *sync.RWMutex
 }
 
-func GetNewRib() rib {
-	return rib{
-		root: &node{mask: 0},
+func GetNewRib() Rib {
+	return Rib{
+		root: &node{},
 		mu:   &sync.RWMutex{},
 	}
 }
 
-func (r *rib) PrintRib() {
+func (r *Rib) PrintRib() {
 	printRib(r.root)
 }
 
@@ -42,38 +41,54 @@ func printRib(node *node) {
 }
 
 // Insert a prefix into the rib
-func (r *rib) Insert(prefix netaddr.IPPrefix) {
-	fmt.Printf("Inserting IP address: %s\n", prefix.String())
+func (r *Rib) Insert(prefix netaddr.IPPrefix) {
+	fmt.Printf("inserting %s\n", prefix.String())
 	currentNode := r.root
-	for _, v := range prefix.IP().As4() {
-		if currentNode.children[v] == nil {
-			currentNode.children[v] = &node{mask: 0, val: v}
+	addr := prefix.IP().As4()
+	var bitCount uint8
+	// <3 because we really don't care about the last octet as we won't store anything > 24
+	for i := 0; i < 3; i++ {
+		// TODO: We never have < /8 either, so the first node should really be a decimal!
+		bits := intToBinBitwise(addr[i])
+		fmt.Printf("Inserting octet %d\n", addr[i])
+		for _, bit := range bits {
+			fmt.Printf("Inserting bit %d\n", bit)
+			if currentNode.children[bit] == nil {
+				fmt.Println("This bit does not exist, so adding")
+				currentNode.children[bit] = &node{}
+			}
+			currentNode = currentNode.children[bit]
+			bitCount++
+			if bitCount == prefix.Bits() {
+				currentNode.mask = bitCount
+				fmt.Printf("Reached %d bits, so stopping\n", bitCount)
+				return
+			}
 		}
-		currentNode = currentNode.children[v]
 	}
-	currentNode.mask = prefix.Bits()
-	fmt.Println(currentNode.mask)
 }
 
-func (r *rib) Delete(prefix netaddr.IPPrefix) {}
+func (r *Rib) Delete(prefix netaddr.IPPrefix) {}
 
 // Search the rib for a prefix
-func (r *rib) Search(prefix netaddr.IP) *netaddr.IPPrefix {
+func (r *Rib) Search(prefix netaddr.IP) *netaddr.IPPrefix {
 	var found [4]byte
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	fmt.Printf("Finding IP address: %s\n", prefix.String())
 
 	currentNode := r.root
-	for i := 0; i < len(prefix.As4()); i++ {
+	for i := 0; i < 3; i++ {
+		fmt.Printf("trying to find %d\n", prefix.As4()[i])
 		if currentNode.children[prefix.As4()[i]] != nil {
-			fmt.Printf("***:%d\n", prefix.As4()[i])
+			fmt.Printf("found %d\n", prefix.As4()[i])
 			found[i] = prefix.As4()[i]
 			currentNode = currentNode.children[prefix.As4()[i]]
 		} else {
-			fmt.Println("something")
+			fmt.Printf("did not find %d\n", prefix.As4()[i])
 		}
 	}
+	found[3] = 0
 	if cmp.Equal([4]byte{0, 0, 0, 0}, found) {
 		fmt.Println("Found nothing")
 		fmt.Println()
@@ -86,8 +101,27 @@ func (r *rib) Search(prefix netaddr.IP) *netaddr.IPPrefix {
 	return &final
 }
 
-// this rib will not accept bogon prefixes
-func isBogon() bool {
+func getMaxUint8(nums []uint8) uint8 {
+	var max uint8
+	for _, v := range nums {
+		if v > max {
+			max = v
+		}
+	}
+	return max
+}
 
-	return false
+// intToBinBitwise will take a uint8 and return a slice
+// of 8 bits representing the binary version
+func intToBinBitwise(num uint8) []uint8 {
+	var res = make([]uint8, 0, 8)
+	for i := 7; i >= 0; i-- {
+		k := num >> i
+		if (k & 1) > 0 {
+			res = append(res, 1)
+		} else {
+			res = append(res, 0)
+		}
+	}
+	return res
 }
