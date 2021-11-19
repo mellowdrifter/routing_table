@@ -8,7 +8,6 @@ import (
 )
 
 type node struct {
-	mask     uint8
 	prefix   *netaddr.IPPrefix
 	children [2]*node
 }
@@ -49,7 +48,6 @@ func (r *Rib) Insert(prefix netaddr.IPPrefix) {
 			}
 			currentNode = currentNode.children[bit]
 			if bitCount == mask {
-				currentNode.mask = mask
 				currentNode.prefix = &prefix
 				return
 			}
