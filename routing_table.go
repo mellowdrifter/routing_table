@@ -4,12 +4,12 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/google/go-cmp/cmp"
 	"inet.af/netaddr"
 )
 
 type node struct {
 	mask     uint8
+	prefix   *netaddr.IPPrefix
 	children [2]*node
 }
 
@@ -32,6 +32,9 @@ func (r *Rib) PrintRib() {
 
 // Insert a prefix into the rib
 func (r *Rib) Insert(prefix netaddr.IPPrefix) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
 	fmt.Printf("inserting %s\n", prefix.String())
 	currentNode := r.root
 	addr := prefix.IP().As4()
@@ -41,55 +44,47 @@ func (r *Rib) Insert(prefix netaddr.IPPrefix) {
 	for i := 0; i < 3; i++ {
 		// TODO: We never have < /8 either, so the first node should really be a decimal!
 		bits := intToBinBitwise(addr[i])
-		fmt.Printf("Inserting octet %d\n", addr[i])
+		//fmt.Printf("Inserting octet %d\n", addr[i])
 		for _, bit := range bits {
-			fmt.Printf("Inserting bit %d\n", bit)
+			//fmt.Printf("Inserting bit %d\n", bit)
 			if currentNode.children[bit] == nil {
-				fmt.Println("This bit does not exist, so adding")
+				//fmt.Println("This bit does not exist, so adding")
 				currentNode.children[bit] = &node{}
 			}
 			currentNode = currentNode.children[bit]
 			bitCount++
 			if bitCount == mask {
-				currentNode.mask = bitCount
-				fmt.Printf("Reached %d bits, so stopping\n", bitCount)
+				currentNode.mask = mask
+				currentNode.prefix = &prefix
+				//fmt.Printf("Reached %d bits, so stopping\n", bitCount)
 				return
 			}
 		}
 	}
 }
 
-func (r *Rib) Delete(prefix netaddr.IPPrefix) {}
-
 // Search the rib for a prefix
-func (r *Rib) Search(prefix netaddr.IP) *netaddr.IPPrefix {
-	var found [4]byte
+func (r *Rib) Search(ip netaddr.IP) *netaddr.IPPrefix {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	fmt.Printf("Finding IP address: %s\n", prefix.String())
 
+	fmt.Printf("Finding IP address: %s\n", ip.String())
 	currentNode := r.root
+	addr := ip.As4()
+	// <3 because we really don't care about the last octet as we won't store anything > 24
 	for i := 0; i < 3; i++ {
-		fmt.Printf("trying to find %d\n", prefix.As4()[i])
-		if currentNode.children[prefix.As4()[i]] != nil {
-			fmt.Printf("found %d\n", prefix.As4()[i])
-			found[i] = prefix.As4()[i]
-			currentNode = currentNode.children[prefix.As4()[i]]
-		} else {
-			fmt.Printf("did not find %d\n", prefix.As4()[i])
+		bits := intToBinBitwise(addr[i])
+		fmt.Printf("Finding octet %d\n", addr[i])
+		for _, bit := range bits {
+			if currentNode.children[bit] != nil {
+				currentNode = currentNode.children[bit]
+			}
+			if currentNode.prefix != nil {
+				return currentNode.prefix
+			}
 		}
 	}
-	found[3] = 0
-	if cmp.Equal([4]byte{0, 0, 0, 0}, found) {
-		fmt.Println("Found nothing")
-		fmt.Println()
-		return nil
-	}
-
-	fmt.Printf("Found: %d\n", found)
-	thing := netaddr.IPFrom4(found)
-	final := netaddr.IPPrefixFrom(thing, currentNode.children[0].mask)
-	return &final
+	return nil
 }
 
 // intToBinBitwise will take a uint8 and return a slice
