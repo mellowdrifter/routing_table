@@ -1,7 +1,6 @@
 package routing_table
 
 import (
-	"fmt"
 	"sync"
 
 	"inet.af/netaddr"
@@ -63,7 +62,6 @@ func (r *Rib) Search(ip netaddr.IP) *netaddr.IPPrefix {
 
 	lpm := &netaddr.IPPrefix{}
 
-	fmt.Printf("Finding IP address: %s\n", ip.String())
 	currentNode := r.root
 	addr := ip.As4()
 	bitCount := uint8(1)
@@ -75,7 +73,6 @@ func (r *Rib) Search(ip netaddr.IP) *netaddr.IPPrefix {
 				// save the current best path
 				currentNode = currentNode.children[bit]
 				if currentNode.prefix != nil {
-					//fmt.Printf("lpm is currently %v\n", currentNode.prefix.String())
 					lpm = currentNode.prefix
 				}
 				bitCount++
