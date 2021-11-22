@@ -8,16 +8,24 @@ import (
 	"inet.af/netaddr"
 )
 
+var (
+	v4nodes          = 0
+	v4alreadycreated = 0
+	v6nodes          = 0
+	v6alreadycreated = 0
+)
+
 type node struct {
-	prefix   *netaddr.IPPrefix
 	children [2]*node
+	prefix   *netaddr.IPPrefix
 }
 
 type Rib struct {
-	//TODO: ipv4 and ipv6 will each have their own roots
+	mu       *sync.RWMutex
 	ipv4Root *node
 	ipv6Root *node
-	mu       *sync.RWMutex
+	v4Count  int
+	v6Count  int
 }
 
 func GetNewRib() Rib {
@@ -30,6 +38,12 @@ func GetNewRib() Rib {
 
 func (r *Rib) PrintRib() {
 	// TODO: figure out how to print the rib really
+	fmt.Printf("%d ipv4 prefixes\n", r.v4Count)
+	fmt.Printf("%d ipv4 nodes created\n", v4nodes)
+	fmt.Printf("%d ipv4 nodes already created\n", v4alreadycreated)
+	fmt.Printf("%d ipv6 prefixes\n", r.v6Count)
+	fmt.Printf("%d ipv6 nodes created\n", v6nodes)
+	fmt.Printf("%d ipv6 nodes already created\n", v6alreadycreated)
 }
 
 // Insert a prefix into the rib
@@ -47,11 +61,16 @@ func (r *Rib) InsertIPv4(prefix netaddr.IPPrefix) {
 		bits := intToBinBitwise(addr[i])
 		for _, bit := range bits {
 			if currentNode.children[bit] == nil {
+				v4nodes++
 				currentNode.children[bit] = &node{}
+				//fmt.Printf("memory size is %v bytes\n", unsafe.Sizeof(*currentNode.children[bit]))
+			} else {
+				v4alreadycreated++
 			}
 			currentNode = currentNode.children[bit]
 			if bitCount == mask {
 				currentNode.prefix = &prefix
+				r.v4Count++
 				return
 			}
 			bitCount++
@@ -59,30 +78,32 @@ func (r *Rib) InsertIPv4(prefix netaddr.IPPrefix) {
 	}
 }
 
-func (r *Rib) InsertIPv6(prefix netaddr.IPPrefix) {
+func (r *Rib) DeleteIPv4(prefix netaddr.IPPrefix) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	currentNode := r.ipv6Root
-	addr := prefix.IP().As16()
-	mask := prefix.Bits()
+	//TODO: delete should be idempotent. Meaning search should be updated to search for prefix mask as well.
+	// If prefix and mask doesn't exist, do nothing.
+
+	currentNode := r.ipv4Root
+	addr := prefix.IP().As4()
+	//mask := prefix.Bits()
 	bitCount := uint8(1)
-	// <6 because we really don't care about the last octet as we won't store anything > 48
-	for i := 0; i < 6; i++ {
-		// TODO: only 2000::/3 is assigned. This means the first two bytes are ALWAYS 0 and the third byte is ALWAYS 1
-		// 2000 = 00100000
-		// 3fff = 00111111
-		// https://play.golang.org/p/MZ8-5obwF_B
+	// <3 because we really don't care about the last octet as we won't store anything > 24
+	for i := 0; i < 3; i++ {
+		// TODO: We never have < /8 either, so the first node should really be a decimal!
 		bits := intToBinBitwise(addr[i])
 		for _, bit := range bits {
 			if currentNode.children[bit] == nil {
 				currentNode.children[bit] = &node{}
 			}
 			currentNode = currentNode.children[bit]
-			if bitCount == mask {
-				currentNode.prefix = &prefix
+			/*if bitCount == mask {
+				if currentNode.prefix != nil {
+					currentNode.prefix = nil
+				}
 				return
-			}
+			}*/
 			bitCount++
 		}
 	}
@@ -122,6 +143,39 @@ func (r *Rib) SearchIPv4(ip netaddr.IP) *netaddr.IPPrefix {
 	return nil
 }
 
+func (r *Rib) InsertIPv6(prefix netaddr.IPPrefix) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	currentNode := r.ipv6Root
+	addr := prefix.IP().As16()
+	mask := prefix.Bits()
+	bitCount := uint8(1)
+	// <6 because we really don't care about the last 10 octets as we won't store anything > 48
+	for i := 0; i < 6; i++ {
+		// TODO: only 2000::/3 is assigned. This means the first two bytes are ALWAYS 0 and the third byte is ALWAYS 1
+		// 2000 = 00100000
+		// 3fff = 00111111
+		// https://play.golang.org/p/MZ8-5obwF_B
+		bits := intToBinBitwise(addr[i])
+		for _, bit := range bits {
+			if currentNode.children[bit] == nil {
+				v6nodes++
+				currentNode.children[bit] = &node{}
+			} else {
+				v6alreadycreated++
+			}
+			currentNode = currentNode.children[bit]
+			if bitCount == mask {
+				currentNode.prefix = &prefix
+				r.v6Count++
+				return
+			}
+			bitCount++
+		}
+	}
+}
+
 // Search the rib for a prefix
 func (r *Rib) SearchIPv6(ip netaddr.IP) *netaddr.IPPrefix {
 	start := time.Now()
@@ -134,7 +188,7 @@ func (r *Rib) SearchIPv6(ip netaddr.IP) *netaddr.IPPrefix {
 	currentNode := r.ipv6Root
 	addr := ip.As16()
 	bitCount := uint8(1)
-	// <3 because we really don't care about the last octet as we won't store anything > 24
+	// <6 because we really don't care about the last 10 octets as we won't store anything > 48
 	for i := 0; i < 6; i++ {
 		bits := intToBinBitwise(addr[i])
 		for _, bit := range bits {
