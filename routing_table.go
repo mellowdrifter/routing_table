@@ -2,10 +2,9 @@ package routing_table
 
 import (
 	"fmt"
+	"net/netip"
 	"sync"
 	"time"
-
-	"inet.af/netaddr"
 )
 
 var (
@@ -15,11 +14,9 @@ var (
 	v6alreadycreated = 0
 )
 
-type node struct {
-	children [2]*node
-	prefix   *netaddr.IPPrefix
+type router struct {
+	ribs []Rib
 }
-
 type Rib struct {
 	mu       *sync.RWMutex
 	ipv4Root *node
@@ -28,12 +25,30 @@ type Rib struct {
 	v6Count  int
 }
 
+type node struct {
+	children [2]*node
+	prefix   *netip.Prefix
+	parent   *node
+}
+
+func GetNewRouter() router {
+	return router{}
+}
+
 func GetNewRib() Rib {
 	return Rib{
 		ipv4Root: &node{},
 		ipv6Root: &node{},
 		mu:       &sync.RWMutex{},
 	}
+}
+
+func (r *router) Size() int {
+	return len(r.ribs)
+}
+
+func (r *router) AddRib(rib Rib) {
+	r.ribs = append(r.ribs, rib)
 }
 
 func (r *Rib) PrintRib() {
@@ -47,14 +62,18 @@ func (r *Rib) PrintRib() {
 }
 
 // Insert a prefix into the rib
-func (r *Rib) InsertIPv4(prefix netaddr.IPPrefix) {
+func (r *Rib) InsertIPv4(prefix netip.Prefix) {
+	// TODO: benchmark this
+	if prefix.Addr().Is6() {
+		return
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
 	currentNode := r.ipv4Root
-	addr := prefix.IP().As4()
+	addr := prefix.Addr().As4()
 	mask := prefix.Bits()
-	bitCount := uint8(1)
+	bitCount := 1
 	// <3 because we really don't care about the last octet as we won't store anything > 24
 	for i := 0; i < 3; i++ {
 		// TODO: We never have < /8 either, so the first node should really be a decimal!
@@ -62,8 +81,10 @@ func (r *Rib) InsertIPv4(prefix netaddr.IPPrefix) {
 		for _, bit := range bits {
 			if currentNode.children[bit] == nil {
 				v4nodes++
-				currentNode.children[bit] = &node{}
-				//fmt.Printf("memory size is %v bytes\n", unsafe.Sizeof(*currentNode.children[bit]))
+				currentNode.children[bit] = &node{
+					parent: currentNode,
+				}
+				// fmt.Printf("memory size is %v bytes\n", unsafe.Sizeof(*currentNode.children[bit]))
 			} else {
 				v4alreadycreated++
 			}
@@ -78,49 +99,77 @@ func (r *Rib) InsertIPv4(prefix netaddr.IPPrefix) {
 	}
 }
 
-func (r *Rib) DeleteIPv4(prefix netaddr.IPPrefix) {
+func (r *Rib) DeleteIPv4(prefix netip.Prefix) {
+	if prefix.Addr().Is6() {
+		return
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	//TODO: delete should be idempotent. Meaning search should be updated to search for prefix mask as well.
+	// TODO: delete should be idempotent. Meaning search should be updated to search for prefix mask as well.
 	// If prefix and mask doesn't exist, do nothing.
 
 	currentNode := r.ipv4Root
-	addr := prefix.IP().As4()
-	//mask := prefix.Bits()
-	bitCount := uint8(1)
-	// <3 because we really don't care about the last octet as we won't store anything > 24
+	addr := prefix.Addr().As4()
+	mask := prefix.Bits()
+	bitCount := 1
 	for i := 0; i < 3; i++ {
-		// TODO: We never have < /8 either, so the first node should really be a decimal!
 		bits := intToBinBitwise(addr[i])
 		for _, bit := range bits {
+			// If prefix does not exist, we return early
 			if currentNode.children[bit] == nil {
-				currentNode.children[bit] = &node{}
-			}
-			currentNode = currentNode.children[bit]
-			/*if bitCount == mask {
-				if currentNode.prefix != nil {
-					currentNode.prefix = nil
-				}
 				return
-			}*/
+			}
+			// add node to list of potential deletes
+			// nodes = append(nodes, currentNode.children[bit])
+			currentNode = currentNode.children[bit]
+			if bitCount == mask {
+				currentNode.prefix = nil
+				deleteNode(currentNode)
+				return
+			}
 			bitCount++
 		}
 	}
 }
 
+// deleteNode will remove a node if it's empty, then will work upwards in the TRIE
+// deleting all empty nodes it can.
+func deleteNode(node *node) {
+	// ensure we don't fall off the top of the tree.
+	if node.parent == nil {
+		return
+	}
+
+	// a node can only be deleted if it has no prefix and no children.
+	if node.children[0] == nil && node.children[1] == nil && node.prefix == nil {
+		// each node can have two children, so need to check both.
+		for j := 0; j < 2; j++ {
+			if node.parent.children[j] == node {
+				node.parent.children[j] = nil
+				// keep deleting empty nodes.
+				deleteNode(node.parent)
+				return
+			}
+		}
+	}
+}
+
 // Search the rib for a prefix
-func (r *Rib) SearchIPv4(ip netaddr.IP) *netaddr.IPPrefix {
+func (r *Rib) SearchIPv4(ip netip.Addr) *netip.Prefix {
+	if ip.Is6() {
+		return nil
+	}
 	start := time.Now()
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	defer fmt.Printf("IP lookup took %s\n", time.Since(start).String())
 
-	lpm := &netaddr.IPPrefix{}
+	lpm := &netip.Prefix{}
 
 	currentNode := r.ipv4Root
 	addr := ip.As4()
-	bitCount := uint8(1)
+	bitCount := 1
 	// <3 because we really don't care about the last octet as we won't store anything > 24
 	for i := 0; i < 3; i++ {
 		bits := intToBinBitwise(addr[i])
@@ -143,14 +192,14 @@ func (r *Rib) SearchIPv4(ip netaddr.IP) *netaddr.IPPrefix {
 	return nil
 }
 
-func (r *Rib) InsertIPv6(prefix netaddr.IPPrefix) {
+func (r *Rib) InsertIPv6(prefix netip.Prefix) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
 	currentNode := r.ipv6Root
-	addr := prefix.IP().As16()
+	addr := prefix.Addr().As16()
 	mask := prefix.Bits()
-	bitCount := uint8(1)
+	bitCount := 1
 	// <6 because we really don't care about the last 10 octets as we won't store anything > 48
 	for i := 0; i < 6; i++ {
 		// TODO: only 2000::/3 is assigned. This means the first two bytes are ALWAYS 0 and the third byte is ALWAYS 1
@@ -177,17 +226,20 @@ func (r *Rib) InsertIPv6(prefix netaddr.IPPrefix) {
 }
 
 // Search the rib for a prefix
-func (r *Rib) SearchIPv6(ip netaddr.IP) *netaddr.IPPrefix {
+func (r *Rib) SearchIPv6(ip netip.Addr) *netip.Prefix {
+	if ip.Is4() {
+		return nil
+	}
 	start := time.Now()
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	defer fmt.Printf("IP lookup took %s\n", time.Since(start).String())
 
-	lpm := &netaddr.IPPrefix{}
+	lpm := &netip.Prefix{}
 
 	currentNode := r.ipv6Root
 	addr := ip.As16()
-	bitCount := uint8(1)
+	bitCount := 1
 	// <6 because we really don't care about the last 10 octets as we won't store anything > 48
 	for i := 0; i < 6; i++ {
 		bits := intToBinBitwise(addr[i])
@@ -215,7 +267,7 @@ func (r *Rib) SearchIPv6(ip netaddr.IP) *netaddr.IPPrefix {
 // TODO: test if it's slower to pass in bit length to only get back
 // the amount of bits we require
 func intToBinBitwise(num uint8) []uint8 {
-	var res = make([]uint8, 0, 8)
+	res := make([]uint8, 0, 8)
 	for i := 7; i >= 0; i-- {
 		k := num >> i
 		if (k & 1) > 0 {
