@@ -1,4 +1,4 @@
-module github.com/mellowdrifter/routing_table/test
+module github.com/mellowdrifter/routing_table/bench
 
 go 1.18
 

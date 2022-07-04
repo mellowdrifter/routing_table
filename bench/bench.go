@@ -16,7 +16,7 @@ func main() {
 	router := rib.GetNewRib()
 
 	// IPv6
-	f, err := os.Open("v6.txt")
+	f, err := os.Open("../testdata/v6.txt")
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -41,7 +41,7 @@ func main() {
 	f.Close()
 
 	// IPv4
-	f, err = os.Open("v4.txt")
+	f, err = os.Open("../testdata/v4.txt")
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -81,4 +81,59 @@ func main() {
 		lpm := router.SearchIPv6(l)
 		fmt.Printf("lpm for %s is %s\n", l.String(), lpm.String())
 	}
+
+	fmt.Println("sleeping for one minute")
+	time.Sleep(time.Minute * 1)
+
+	// IPv6 deletion
+	f, err = os.Open("../testdata/v6.txt")
+	if err != nil {
+		log.Fatal(err)
+	}
+	csvReader = csv.NewReader(f)
+
+	var fullv6table2 []netip.Prefix
+	for {
+		ips, err := csvReader.Read()
+		if err == io.EOF {
+			break
+		}
+
+		for ip := range ips {
+			fullv6table2 = append(fullv6table2, netip.MustParsePrefix(ips[ip]))
+		}
+	}
+	start = time.Now()
+	for _, ip := range fullv6table2 {
+		router.DeleteIPv6(ip)
+	}
+	fmt.Printf("took %s to delete %d IPv6 prefixes\n", time.Since(start), len(fullv6table2))
+	f.Close()
+
+	// IPv4 deletion
+	f, err = os.Open("../testdata/v4.txt")
+	if err != nil {
+		log.Fatal(err)
+	}
+	csvReader = csv.NewReader(f)
+
+	var fullv4table2 []netip.Prefix
+	for {
+		ips, err := csvReader.Read()
+		if err == io.EOF {
+			break
+		}
+
+		for ip := range ips {
+			fullv4table2 = append(fullv4table2, netip.MustParsePrefix(ips[ip]))
+		}
+	}
+	start = time.Now()
+	for _, ip := range fullv4table2 {
+		router.DeleteIPv4(ip)
+	}
+	fmt.Printf("took %s to delete %d IPv4 prefixes\n", time.Since(start), len(fullv4table2))
+	f.Close()
+
+	router.PrintRib()
 }
