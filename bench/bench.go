@@ -7,12 +7,28 @@ import (
 	"log"
 	"net/netip"
 	"os"
+	"runtime"
 	"time"
 
 	rib "github.com/mellowdrifter/routing_table"
 )
 
+func printMemStats(label string) {
+	runtime.GC()
+	var m runtime.MemStats
+	runtime.ReadMemStats(&m)
+	fmt.Printf("[%s] Alloc = %d MiB, TotalAlloc = %d MiB, Sys = %d MiB, HeapObjects = %d\n",
+		label,
+		m.Alloc/1024/1024,
+		m.TotalAlloc/1024/1024,
+		m.Sys/1024/1024,
+		m.HeapObjects,
+	)
+}
+
 func main() {
+	printMemStats("baseline")
+
 	router := rib.GetNewRib()
 
 	// IPv6
@@ -62,6 +78,8 @@ func main() {
 		router.InsertIPv4(ip)
 	}
 	fmt.Printf("took %s to insert %d IPv4 prefixes\n\n", time.Since(start), len(fulltable))
+
+	printMemStats("after insert")
 	router.PrintRib()
 
 	lookups := []netip.Addr{
@@ -82,8 +100,7 @@ func main() {
 		fmt.Printf("lpm for %s is %s\n", l.String(), lpm.String())
 	}
 
-	fmt.Println("sleeping for one minute")
-	time.Sleep(time.Minute * 1)
+	fmt.Println()
 
 	// IPv6 deletion
 	f, err = os.Open("../testdata/v6.txt")
@@ -135,5 +152,6 @@ func main() {
 	fmt.Printf("took %s to delete %d IPv4 prefixes\n", time.Since(start), len(fullv4table2))
 	f.Close()
 
+	printMemStats("after delete")
 	router.PrintRib()
 }
