@@ -37,12 +37,148 @@ type Rib struct {
 	// is assigned from 2000::/3, meaning the first byte is always in the range
 	// 0x20–0x3F. Subtracting 0x20 gives a compact 0–31 index.
 	// Supports prefix lengths /8 through /48.
+	// ipv6Root is indexed by (first_byte - 0x20). All global unicast IPv6 space
+	// is assigned from 2000::/3, meaning the first byte is always in the range
+	// 0x20–0x3F. Subtracting 0x20 gives a compact 0–31 index.
+	// Supports prefix lengths /8 through /48.
 	ipv6Root [32]*node
+
+	// attrTable deduplicates and reference-counts BGP route attributes
+	// across all prefixes, drastically reducing memory usage.
+	attrTable *attrTable
 
 	v4Count int
 	v6Count int
 	v4masks map[int]int
 	v6masks map[int]int
+}
+
+// attrTable manages deduplication of RouteAttributes.
+type attrTable struct {
+	mu      sync.Mutex
+	entries map[uint64][]*RouteAttributes
+}
+
+func newAttrTable() *attrTable {
+	return &attrTable{
+		entries: make(map[uint64][]*RouteAttributes),
+	}
+}
+
+// fnv-1a 64-bit hash
+func hashAttributes(attr *RouteAttributes) uint64 {
+	if attr == nil {
+		return 0
+	}
+	var h uint64 = 14695981039346656037
+	// Hash NextHop
+	b := attr.NextHop.As16()
+	for _, v := range b {
+		h ^= uint64(v)
+		h *= 1099511628211
+	}
+	// Hash AsPath
+	for _, v := range attr.AsPath {
+		h ^= uint64(v)
+		h *= 1099511628211
+	}
+	// Hash Communities
+	for _, v := range attr.Communities {
+		h ^= uint64(v)
+		h *= 1099511628211
+	}
+	h ^= uint64(attr.LocalPref)
+	h *= 1099511628211
+	h ^= uint64(attr.MED)
+	h *= 1099511628211
+	return h
+}
+
+func equalAttributes(a, b *RouteAttributes) bool {
+	if a == b {
+		return true
+	}
+	if a == nil || b == nil {
+		return false
+	}
+	if a.NextHop != b.NextHop || a.LocalPref != b.LocalPref || a.MED != b.MED {
+		return false
+	}
+	if len(a.AsPath) != len(b.AsPath) {
+		return false
+	}
+	for i, v := range a.AsPath {
+		if v != b.AsPath[i] {
+			return false
+		}
+	}
+	if len(a.Communities) != len(b.Communities) {
+		return false
+	}
+	for i, v := range a.Communities {
+		if v != b.Communities[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func (at *attrTable) getOrInsert(attr *RouteAttributes) *RouteAttributes {
+	if attr == nil {
+		return nil
+	}
+	at.mu.Lock()
+	defer at.mu.Unlock()
+
+	h := hashAttributes(attr)
+	for _, existing := range at.entries[h] {
+		if equalAttributes(existing, attr) {
+			existing.refCount++
+			return existing
+		}
+	}
+
+	// Not found, create deep copy
+	copyAttr := &RouteAttributes{
+		NextHop:   attr.NextHop,
+		LocalPref: attr.LocalPref,
+		MED:       attr.MED,
+		hash:      h,
+		refCount:  1,
+	}
+	if attr.AsPath != nil {
+		copyAttr.AsPath = make([]uint32, len(attr.AsPath))
+		copy(copyAttr.AsPath, attr.AsPath)
+	}
+	if attr.Communities != nil {
+		copyAttr.Communities = make([]uint32, len(attr.Communities))
+		copy(copyAttr.Communities, attr.Communities)
+	}
+
+	at.entries[h] = append(at.entries[h], copyAttr)
+	return copyAttr
+}
+
+func (at *attrTable) release(attr *RouteAttributes) {
+	if attr == nil {
+		return
+	}
+	at.mu.Lock()
+	defer at.mu.Unlock()
+
+	attr.refCount--
+	if attr.refCount == 0 {
+		list := at.entries[attr.hash]
+		for i, existing := range list {
+			if existing == attr { // pointer equality is safe here
+				at.entries[attr.hash] = append(list[:i], list[i+1:]...)
+				if len(at.entries[attr.hash]) == 0 {
+					delete(at.entries, attr.hash)
+				}
+				return
+			}
+		}
+	}
 }
 
 // RouteAttributes holds the BGP path attributes.
@@ -52,6 +188,10 @@ type RouteAttributes struct {
 	Communities []uint32
 	LocalPref   uint32
 	MED         uint32
+
+	// Internal fields for deduplication and garbage collection
+	hash     uint64
+	refCount uint32
 }
 
 // Route represents an entry in the RIB.
@@ -82,30 +222,33 @@ func GetNewRouter() router {
 
 // GetNewRib creates a new empty RIB. The root arrays are zero-initialised
 // (all nil pointers) — nodes are created on demand during insertion.
+// It also initializes the attribute deduplication table.
 func GetNewRib() Rib {
 	return Rib{
-		v4mu:    &sync.RWMutex{},
-		v6mu:    &sync.RWMutex{},
-		v4masks: make(map[int]int),
-		v6masks: make(map[int]int),
+		v4mu:      &sync.RWMutex{},
+		v6mu:      &sync.RWMutex{},
+		attrTable: newAttrTable(),
+		v4masks:   make(map[int]int),
+		v6masks:   make(map[int]int),
 	}
 }
 
-// Reset atomically flushes the entire RIB, clearing all IPv4 and IPv6 prefixes.
-// Used during BGP session reset when the full table will be re-sent.
+// Reset atomically flushes the entire routing table and resets all counters.
+// This is extremely fast as it only re-assigns the root arrays, allowing the GC
+// to clean up the abandoned trie nodes. It also clears the attribute table.
 func (r *Rib) Reset() {
 	r.v4mu.Lock()
 	r.v6mu.Lock()
-	
+	defer r.v4mu.Unlock()
+	defer r.v6mu.Unlock()
+
 	r.ipv4Root = [256]*node{}
 	r.ipv6Root = [32]*node{}
 	r.v4Count = 0
 	r.v6Count = 0
 	r.v4masks = make(map[int]int)
 	r.v6masks = make(map[int]int)
-	
-	r.v6mu.Unlock()
-	r.v4mu.Unlock()
+	r.attrTable = newAttrTable()
 }
 
 func (r *router) Size() int {
@@ -204,6 +347,9 @@ func (r *Rib) insertIPv4Unlocked(route Route) {
 
 	addr := route.Prefix.Addr().As4()
 
+	// Retrieve or create the deduplicated attributes
+	dedupAttr := r.attrTable.getOrInsert(route.Attributes)
+
 	// Direct array lookup by first octet — creates the entry node on first use.
 	if r.ipv4Root[addr[0]] == nil {
 		r.ipv4Root[addr[0]] = &node{}
@@ -216,10 +362,12 @@ func (r *Rib) insertIPv4Unlocked(route Route) {
 			r.v4Count++
 			r.v4masks[mask]++
 			newRoute := route
+			newRoute.Attributes = dedupAttr
 			currentNode.route = &newRoute
 		} else {
-			// Prefix exists, just update attributes in place
-			currentNode.route.Attributes = route.Attributes
+			// Prefix exists, release old attributes and update in place
+			r.attrTable.release(currentNode.route.Attributes)
+			currentNode.route.Attributes = dedupAttr
 		}
 		return
 	}
@@ -240,9 +388,11 @@ func (r *Rib) insertIPv4Unlocked(route Route) {
 					r.v4Count++
 					r.v4masks[mask]++
 					newRoute := route
+					newRoute.Attributes = dedupAttr
 					currentNode.route = &newRoute
 				} else {
-					currentNode.route.Attributes = route.Attributes
+					r.attrTable.release(currentNode.route.Attributes)
+					currentNode.route.Attributes = dedupAttr
 				}
 				return
 			}
@@ -288,6 +438,9 @@ func (r *Rib) insertIPv6Unlocked(route Route) {
 		return
 	}
 
+	// Retrieve or create the deduplicated attributes
+	dedupAttr := r.attrTable.getOrInsert(route.Attributes)
+
 	// Map the first byte to array index 0–31 by subtracting 0x20.
 	idx := addr[0] - 0x20
 	if r.ipv6Root[idx] == nil {
@@ -301,9 +454,11 @@ func (r *Rib) insertIPv6Unlocked(route Route) {
 			r.v6Count++
 			r.v6masks[mask]++
 			newRoute := route
+			newRoute.Attributes = dedupAttr
 			currentNode.route = &newRoute
 		} else {
-			currentNode.route.Attributes = route.Attributes
+			r.attrTable.release(currentNode.route.Attributes)
+			currentNode.route.Attributes = dedupAttr
 		}
 		return
 	}
@@ -324,9 +479,11 @@ func (r *Rib) insertIPv6Unlocked(route Route) {
 					r.v6Count++
 					r.v6masks[mask]++
 					newRoute := route
+					newRoute.Attributes = dedupAttr
 					currentNode.route = &newRoute
 				} else {
-					currentNode.route.Attributes = route.Attributes
+					r.attrTable.release(currentNode.route.Attributes)
+					currentNode.route.Attributes = dedupAttr
 				}
 				return
 			}
@@ -375,6 +532,7 @@ func (r *Rib) deleteIPv4Unlocked(prefix netip.Prefix) {
 		if currentNode.route == nil {
 			return
 		}
+		r.attrTable.release(currentNode.route.Attributes)
 		r.v4Count--
 		currentNode.route = nil
 		r.v4masks[mask]--
@@ -400,6 +558,7 @@ func (r *Rib) deleteIPv4Unlocked(prefix netip.Prefix) {
 				if currentNode.route == nil {
 					return
 				}
+				r.attrTable.release(currentNode.route.Attributes)
 				r.v4Count--
 				currentNode.route = nil
 				r.v4masks[mask]--
@@ -457,6 +616,7 @@ func (r *Rib) deleteIPv6Unlocked(prefix netip.Prefix) {
 		if currentNode.route == nil {
 			return
 		}
+		r.attrTable.release(currentNode.route.Attributes)
 		r.v6Count--
 		currentNode.route = nil
 		r.v6masks[mask]--
@@ -479,6 +639,7 @@ func (r *Rib) deleteIPv6Unlocked(prefix netip.Prefix) {
 				if currentNode.route == nil {
 					return
 				}
+				r.attrTable.release(currentNode.route.Attributes)
 				r.v6Count--
 				currentNode.route = nil
 				r.v6masks[mask]--
