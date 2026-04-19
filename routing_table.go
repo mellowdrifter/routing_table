@@ -57,8 +57,6 @@ type Rib struct {
 	v6masks     map[int]int
 }
 
-
-
 // LargeCommunity represents a BGP Large Community (RFC 8092).
 type LargeCommunity struct {
 	GlobalAdmin uint32
@@ -680,6 +678,125 @@ v6walk:
 	return nil
 }
 
+// LookupIPv4 performs an exact prefix match for an IPv4 prefix.
+//
+// Unlike SearchIPv4 (which does longest prefix match), this walks the trie
+// to the exact depth specified by the prefix mask and returns the route only
+// if one is stored at that exact node. Returns nil if no exact match exists.
+func (r *Rib) LookupIPv4(prefix netip.Prefix) *Route {
+	if prefix.Addr().Is6() {
+		return nil
+	}
+	r.v4mu.RLock()
+	defer r.v4mu.RUnlock()
+
+	mask := prefix.Bits()
+	if mask < 8 || mask > 24 {
+		return nil
+	}
+
+	addr := prefix.Addr().As4()
+
+	if r.ipv4Root[addr[0]] == nil {
+		return nil
+	}
+	currentNode := r.ipv4Root[addr[0]]
+
+	// A /8 prefix is stored directly on the array entry node.
+	if mask == 8 {
+		if currentNode.attributes != nil {
+			return &Route{
+				Prefix:     prefix.Masked(),
+				Attributes: currentNode.attributes,
+			}
+		}
+		return nil
+	}
+
+	// Walk bits 9–24 to the exact depth.
+	bitCount := 9
+	for i := 1; i < 3; i++ {
+		bits := intToBinBitwise(addr[i])
+		for _, bit := range bits {
+			if currentNode.children[bit] == nil {
+				return nil
+			}
+			currentNode = currentNode.children[bit]
+			if bitCount == mask {
+				if currentNode.attributes != nil {
+					return &Route{
+						Prefix:     prefix.Masked(),
+						Attributes: currentNode.attributes,
+					}
+				}
+				return nil
+			}
+			bitCount++
+		}
+	}
+	return nil
+}
+
+// LookupIPv6 performs an exact prefix match for an IPv6 prefix.
+//
+// Walks the trie to the exact depth specified by the prefix mask and returns
+// the route only if one is stored at that exact node. Returns nil if no exact
+// match exists.
+func (r *Rib) LookupIPv6(prefix netip.Prefix) *Route {
+	if prefix.Addr().Is4() {
+		return nil
+	}
+	r.v6mu.RLock()
+	defer r.v6mu.RUnlock()
+
+	mask := prefix.Bits()
+	addr := prefix.Addr().As16()
+
+	if mask < 8 || mask > 48 || addr[0] < 0x20 || addr[0] > 0x3F {
+		return nil
+	}
+
+	idx := addr[0] - 0x20
+	if r.ipv6Root[idx] == nil {
+		return nil
+	}
+	currentNode := r.ipv6Root[idx]
+
+	// A /8 prefix is stored directly on the array entry node.
+	if mask == 8 {
+		if currentNode.attributes != nil {
+			return &Route{
+				Prefix:     prefix.Masked(),
+				Attributes: currentNode.attributes,
+			}
+		}
+		return nil
+	}
+
+	// Walk bits 9–48 to the exact depth.
+	bitCount := 9
+	for i := 1; i < 6; i++ {
+		bits := intToBinBitwise(addr[i])
+		for _, bit := range bits {
+			if currentNode.children[bit] == nil {
+				return nil
+			}
+			currentNode = currentNode.children[bit]
+			if bitCount == mask {
+				if currentNode.attributes != nil {
+					return &Route{
+						Prefix:     prefix.Masked(),
+						Attributes: currentNode.attributes,
+					}
+				}
+				return nil
+			}
+			bitCount++
+		}
+	}
+	return nil
+}
+
 // intToBinBitwise will take a uint8 and return a slice
 // of 8 bits representing the binary version
 func intToBinBitwise(num uint8) []uint8 {
@@ -712,7 +829,7 @@ func formatBytes(b uint64) string {
 }
 
 func (s MemoryStats) String() string {
-	return fmt.Sprintf("BIRD memory usage\n                  Effective    Overhead\nRouting tables:   %9s   %9s\nRoute attributes: %9s   %9s\n",
+	return fmt.Sprintf("RIB memory usage\n                  Effective    Overhead\nRouting tables:   %9s   %9s\nRoute attributes: %9s   %9s\n",
 		formatBytes(s.RoutingTablesEffective), formatBytes(s.RoutingTablesOverhead),
 		formatBytes(s.RouteAttributesEffective), formatBytes(s.RouteAttributesOverhead))
 }

@@ -924,3 +924,116 @@ func TestAttributeGarbageCollection(t *testing.T) {
 		t.Errorf("expected 0 prefixes, got %d", router.V4Count())
 	}
 }
+
+// TestLookupIPv4ExactMatch verifies that LookupIPv4 returns a route only
+// when the exact prefix and mask length exists in the RIB.
+func TestLookupIPv4ExactMatch(t *testing.T) {
+	router := rib.GetNewRib()
+	routes := []string{"1.0.0.0/8", "1.1.0.0/16", "1.1.1.0/24"}
+	for _, route := range routes {
+		router.InsertIPv4(rib.Route{
+			Prefix:     netip.MustParsePrefix(route),
+			Attributes: &rib.RouteAttributes{LocalPref: 100},
+		})
+	}
+
+	tests := []struct {
+		name   string
+		prefix string
+		found  bool
+	}{
+		{"exact /24 hit", "1.1.1.0/24", true},
+		{"exact /16 hit", "1.1.0.0/16", true},
+		{"exact /8 hit", "1.0.0.0/8", true},
+		{"wrong mask — /16 exists but asking /24", "1.1.0.0/24", false},
+		{"prefix not in table", "2.0.0.0/8", false},
+		{"path exists but no route at /20", "1.1.0.0/20", false},
+	}
+
+	t.Parallel()
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			result := router.LookupIPv4(netip.MustParsePrefix(tc.prefix))
+			if tc.found && result == nil {
+				t.Fatalf("expected to find %s, got nil", tc.prefix)
+			}
+			if !tc.found && result != nil {
+				t.Fatalf("expected nil for %s, got %s", tc.prefix, result.Prefix)
+			}
+			if tc.found && result.Prefix != netip.MustParsePrefix(tc.prefix).Masked() {
+				t.Errorf("expected %s, got %s", tc.prefix, result.Prefix)
+			}
+		})
+	}
+}
+
+// TestLookupIPv6ExactMatch verifies that LookupIPv6 returns a route only
+// when the exact prefix and mask length exists in the RIB.
+func TestLookupIPv6ExactMatch(t *testing.T) {
+	router := rib.GetNewRib()
+	routes := []string{"2600::/8", "2600::/32", "2600:1::/48"}
+	for _, route := range routes {
+		router.InsertIPv6(rib.Route{
+			Prefix:     netip.MustParsePrefix(route),
+			Attributes: &rib.RouteAttributes{LocalPref: 200},
+		})
+	}
+
+	tests := []struct {
+		name   string
+		prefix string
+		found  bool
+	}{
+		{"exact /48 hit", "2600:1::/48", true},
+		{"exact /32 hit", "2600::/32", true},
+		{"exact /8 hit", "2600::/8", true},
+		{"wrong mask — /48 exists but asking /32", "2600:1::/32", false},
+		{"prefix not in table", "2700::/32", false},
+		{"path exists but no route at /40", "2600::/40", false},
+	}
+
+	t.Parallel()
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			result := router.LookupIPv6(netip.MustParsePrefix(tc.prefix))
+			if tc.found && result == nil {
+				t.Fatalf("expected to find %s, got nil", tc.prefix)
+			}
+			if !tc.found && result != nil {
+				t.Fatalf("expected nil for %s, got %s", tc.prefix, result.Prefix)
+			}
+			if tc.found && result.Prefix != netip.MustParsePrefix(tc.prefix).Masked() {
+				t.Errorf("expected %s, got %s", tc.prefix, result.Prefix)
+			}
+		})
+	}
+}
+
+// TestLookupCrossAF verifies that Lookup methods reject wrong address families.
+func TestLookupCrossAF(t *testing.T) {
+	router := rib.GetNewRib()
+	router.InsertIPv4(rib.Route{Prefix: netip.MustParsePrefix("10.0.0.0/8")})
+	router.InsertIPv6(rib.Route{Prefix: netip.MustParsePrefix("2001:db8::/32")})
+
+	// IPv6 prefix via LookupIPv4 — should return nil.
+	if result := router.LookupIPv4(netip.MustParsePrefix("2001:db8::/32")); result != nil {
+		t.Errorf("IPv6 prefix via LookupIPv4 should return nil, got %s", result.Prefix)
+	}
+
+	// IPv4 prefix via LookupIPv6 — should return nil.
+	if result := router.LookupIPv6(netip.MustParsePrefix("10.0.0.0/8")); result != nil {
+		t.Errorf("IPv4 prefix via LookupIPv6 should return nil, got %s", result.Prefix)
+	}
+}
+
+// TestLookupRejectsOutOfRange verifies that out-of-range masks return nil.
+func TestLookupRejectsOutOfRange(t *testing.T) {
+	router := rib.GetNewRib()
+	router.InsertIPv4(rib.Route{Prefix: netip.MustParsePrefix("10.0.0.0/8")})
+
+	// /7 is below minimum
+	if result := router.LookupIPv4(netip.MustParsePrefix("0.0.0.0/1")); result != nil {
+		t.Errorf("mask < /8 should return nil, got %s", result.Prefix)
+	}
+}
+
