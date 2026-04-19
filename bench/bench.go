@@ -51,7 +51,7 @@ func main() {
 	}
 	start := time.Now()
 	for _, ip := range fullv6table {
-		router.InsertIPv6(ip)
+		router.InsertIPv6(rib.Route{Prefix: ip})
 	}
 	fmt.Printf("took %s to insert %d IPv6 prefixes\n", time.Since(start), len(fullv6table))
 	f.Close()
@@ -75,7 +75,7 @@ func main() {
 	}
 	start = time.Now()
 	for _, ip := range fulltable {
-		router.InsertIPv4(ip)
+		router.InsertIPv4(rib.Route{Prefix: ip})
 	}
 	fmt.Printf("took %s to insert %d IPv4 prefixes\n\n", time.Since(start), len(fulltable))
 
@@ -89,7 +89,11 @@ func main() {
 	}
 	for _, l := range lookups {
 		lpm := router.SearchIPv4(l)
-		fmt.Printf("lpm for %s is %s\n", l.String(), lpm.String())
+		if lpm != nil {
+			fmt.Printf("lpm for %s is %s\n", l.String(), lpm.Prefix.String())
+		} else {
+			fmt.Printf("lpm for %s is <nil>\n", l.String())
+		}
 	}
 	lookups6 := []netip.Addr{
 		netip.MustParseAddr("2001:4860:4860::8844"),
@@ -97,7 +101,11 @@ func main() {
 	}
 	for _, l := range lookups6 {
 		lpm := router.SearchIPv6(l)
-		fmt.Printf("lpm for %s is %s\n", l.String(), lpm.String())
+		if lpm != nil {
+			fmt.Printf("lpm for %s is %s\n", l.String(), lpm.Prefix.String())
+		} else {
+			fmt.Printf("lpm for %s is <nil>\n", l.String())
+		}
 	}
 
 	fmt.Println()
