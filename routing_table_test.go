@@ -404,6 +404,32 @@ func TestRejectPrefixShorterThan8(t *testing.T) {
 	}
 }
 
+// TestRejectPrefixTooLong verifies that prefixes exceeding the maximum
+// supported lengths (/24 for IPv4, /48 for IPv6) are rejected.
+// Previously these were silently dropped by the capped trie depth.
+func TestRejectPrefixTooLong(t *testing.T) {
+	router := rib.GetNewRib()
+
+	router.InsertIPv4(netip.MustParsePrefix("10.1.1.0/25"))
+	router.InsertIPv4(netip.MustParsePrefix("10.1.1.1/32"))
+	router.InsertIPv6(netip.MustParsePrefix("2001:db8:1:2::/64"))
+	router.InsertIPv6(netip.MustParsePrefix("2001:db8:1:2::1/128"))
+
+	if router.V4Count() != 0 {
+		t.Errorf("expected 0 IPv4 prefixes, got %d", router.V4Count())
+	}
+	if router.V6Count() != 0 {
+		t.Errorf("expected 0 IPv6 prefixes, got %d", router.V6Count())
+	}
+
+	if lpm := router.SearchIPv4(netip.MustParseAddr("10.1.1.1")); lpm != nil {
+		t.Errorf("IPv4 prefix > /24 should have been rejected, but found %s", lpm)
+	}
+	if lpm := router.SearchIPv6(netip.MustParseAddr("2001:db8:1:2::1")); lpm != nil {
+		t.Errorf("IPv6 prefix > /48 should have been rejected, but found %s", lpm)
+	}
+}
+
 // TestRejectIPv6Outside2000 verifies that IPv6 prefixes outside 2000::/3
 // are rejected.
 func TestRejectIPv6Outside2000(t *testing.T) {
@@ -668,4 +694,123 @@ func TestFullTable(t *testing.T) {
 		fmt.Printf("lpm for %s is %s\n", l.String(), lpm.String())
 	}
 
+}
+
+// TestReset verifies that Reset cleanly empties the entire RIB.
+func TestReset(t *testing.T) {
+	router := rib.GetNewRib()
+	router.InsertIPv4(netip.MustParsePrefix("10.0.0.0/8"))
+	router.InsertIPv6(netip.MustParsePrefix("2001:db8::/32"))
+
+	if router.V4Count() != 1 || router.V6Count() != 1 {
+		t.Fatalf("expected 1 v4 and 1 v6 prefix")
+	}
+
+	router.Reset()
+
+	if router.V4Count() != 0 || router.V6Count() != 0 {
+		t.Fatalf("expected 0 prefixes after reset, got %d v4, %d v6", router.V4Count(), router.V6Count())
+	}
+
+	if router.SearchIPv4(netip.MustParseAddr("10.1.1.1")) != nil {
+		t.Errorf("IPv4 prefix still found after reset")
+	}
+	if router.SearchIPv6(netip.MustParseAddr("2001:db8::1")) != nil {
+		t.Errorf("IPv6 prefix still found after reset")
+	}
+}
+
+// TestBatchOperations verifies batch insert and batch delete operations.
+func TestBatchOperations(t *testing.T) {
+	router := rib.GetNewRib()
+
+	v4Batch := []netip.Prefix{
+		netip.MustParsePrefix("10.0.0.0/8"),
+		netip.MustParsePrefix("10.1.0.0/16"),
+	}
+	v6Batch := []netip.Prefix{
+		netip.MustParsePrefix("2001:db8::/32"),
+		netip.MustParsePrefix("2001:db8:1::/48"),
+	}
+
+	router.InsertIPv4Batch(v4Batch)
+	router.InsertIPv6Batch(v6Batch)
+
+	if router.V4Count() != 2 || router.V6Count() != 2 {
+		t.Fatalf("batch insert failed, counts: v4=%d, v6=%d", router.V4Count(), router.V6Count())
+	}
+
+	router.DeleteIPv4Batch([]netip.Prefix{v4Batch[1]}) // Delete the /16
+	if router.V4Count() != 1 {
+		t.Fatalf("batch delete failed, v4 count: %d", router.V4Count())
+	}
+
+	if lpm := router.SearchIPv4(netip.MustParseAddr("10.1.1.1")); lpm == nil || *lpm != v4Batch[0] {
+		t.Errorf("expected fallback to /8 after batch delete, got %v", lpm)
+	}
+}
+
+// TestConcurrentV4V6Independence verifies that v4 operations don't block v6 operations.
+func TestConcurrentV4V6Independence(t *testing.T) {
+	router := rib.GetNewRib()
+
+	done := make(chan struct{})
+	go func() {
+		// Spam IPv4 inserts and deletes
+		for i := 0; i < 1000; i++ {
+			p := netip.MustParsePrefix("10.0.0.0/8")
+			router.InsertIPv4(p)
+			router.DeleteIPv4(p)
+		}
+		close(done)
+	}()
+
+	// Concurrently do IPv6 operations
+	router.InsertIPv6(netip.MustParsePrefix("2001:db8::/32"))
+	for i := 0; i < 1000; i++ {
+		router.SearchIPv6(netip.MustParseAddr("2001:db8::1"))
+	}
+	<-done
+}
+
+// TestConcurrentInsertAndSearch verifies safety of concurrent reads and writes
+// to the same address family.
+func TestConcurrentInsertAndSearch(t *testing.T) {
+	router := rib.GetNewRib()
+
+	done := make(chan struct{})
+	go func() {
+		for i := 1; i <= 1000; i++ {
+			// e.g. 10.x.0.0/16
+			p := netip.PrefixFrom(netip.AddrFrom4([4]byte{10, byte(i % 255), 0, 0}), 16)
+			router.InsertIPv4(p)
+		}
+		close(done)
+	}()
+
+	for i := 0; i < 1000; i++ {
+		router.SearchIPv4(netip.MustParseAddr("10.1.1.1"))
+	}
+	<-done
+}
+
+// TestResetWithConcurrentReads verifies safety of Reset while reads are in flight.
+func TestResetWithConcurrentReads(t *testing.T) {
+	router := rib.GetNewRib()
+	router.InsertIPv4(netip.MustParsePrefix("10.0.0.0/8"))
+
+	done := make(chan struct{})
+	go func() {
+		for i := 0; i < 1000; i++ {
+			router.SearchIPv4(netip.MustParseAddr("10.1.1.1"))
+		}
+		close(done)
+	}()
+
+	router.Reset()
+	<-done
+
+	if router.V4Count() != 0 {
+		t.Errorf("Reset failed, count is %d", router.V4Count())
+	}
 }

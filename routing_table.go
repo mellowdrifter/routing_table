@@ -5,15 +5,6 @@ import (
 	"log"
 	"net/netip"
 	"sync"
-	"time"
-)
-
-var (
-	v4nodes          = 0
-	v4alreadycreated = 0
-	v6nodes          = 0
-	v6alreadycreated = 0
-	nodes            = 0
 )
 
 type router struct {
@@ -30,8 +21,12 @@ type router struct {
 //     in 2000::/3, so the first byte is always 0x20–0x3F (32 possible values).
 //
 // Maximum supported prefix lengths: /24 for IPv4, /48 for IPv6.
+//
+// Concurrent access is supported via separate per-address-family mutexes,
+// meaning IPv4 updates do not block IPv6 reads/updates.
 type Rib struct {
-	mu *sync.RWMutex
+	v4mu *sync.RWMutex
+	v6mu *sync.RWMutex
 
 	// ipv4Root is indexed directly by the first octet of the IPv4 address.
 	// This replaces 8 levels of binary trie traversal with a single array lookup.
@@ -67,10 +62,28 @@ func GetNewRouter() router {
 // (all nil pointers) — nodes are created on demand during insertion.
 func GetNewRib() Rib {
 	return Rib{
-		mu:      &sync.RWMutex{},
+		v4mu:    &sync.RWMutex{},
+		v6mu:    &sync.RWMutex{},
 		v4masks: make(map[int]int),
 		v6masks: make(map[int]int),
 	}
+}
+
+// Reset atomically flushes the entire RIB, clearing all IPv4 and IPv6 prefixes.
+// Used during BGP session reset when the full table will be re-sent.
+func (r *Rib) Reset() {
+	r.v4mu.Lock()
+	r.v6mu.Lock()
+	
+	r.ipv4Root = [256]*node{}
+	r.ipv6Root = [32]*node{}
+	r.v4Count = 0
+	r.v6Count = 0
+	r.v4masks = make(map[int]int)
+	r.v6masks = make(map[int]int)
+	
+	r.v6mu.Unlock()
+	r.v4mu.Unlock()
 }
 
 func (r *router) Size() int {
@@ -82,49 +95,95 @@ func (r *router) AddRib(rib Rib) {
 }
 
 func (r *Rib) PrintRib() {
-	// TODO: figure out how to print the rib really
-	fmt.Printf("%d ipv4 prefixes\n", r.v4Count)
-	fmt.Printf("%d ipv4 nodes created\n", v4nodes)
-	fmt.Printf("%d ipv4 nodes already created\n", v4alreadycreated)
-	fmt.Printf("%d ipv6 prefixes\n", r.v6Count)
-	fmt.Printf("%d ipv6 nodes created\n", v6nodes)
-	fmt.Printf("%d ipv6 nodes already created\n", v6alreadycreated)
-	fmt.Printf("%d total ipv4 and ipv6 nodes created\n", v4nodes+v6nodes)
-	fmt.Printf("%d nodes deleted\n", nodes)
-	fmt.Printf("%v\n", r.v4masks)
-	fmt.Printf("%v\n", r.v6masks)
+	r.v4mu.RLock()
+	v4c := r.v4Count
+	v4m := make(map[int]int, len(r.v4masks))
+	for k, v := range r.v4masks {
+		v4m[k] = v
+	}
+	r.v4mu.RUnlock()
+
+	r.v6mu.RLock()
+	v6c := r.v6Count
+	v6m := make(map[int]int, len(r.v6masks))
+	for k, v := range r.v6masks {
+		v6m[k] = v
+	}
+	r.v6mu.RUnlock()
+
+	fmt.Printf("%d ipv4 prefixes\n", v4c)
+	fmt.Printf("%d ipv6 prefixes\n", v6c)
+	fmt.Printf("%v\n", v4m)
+	fmt.Printf("%v\n", v6m)
+}
+
+// V4Count returns the total number of IPv4 prefixes in the RIB.
+func (r *Rib) V4Count() int {
+	r.v4mu.RLock()
+	defer r.v4mu.RUnlock()
+	return r.v4Count
+}
+
+// V6Count returns the total number of IPv6 prefixes in the RIB.
+func (r *Rib) V6Count() int {
+	r.v6mu.RLock()
+	defer r.v6mu.RUnlock()
+	return r.v6Count
+}
+
+// GetSubnets returns a copy of the subnet mask distributions for v4 and v6.
+func (r *Rib) GetSubnets() (map[int]int, map[int]int) {
+	r.v4mu.RLock()
+	v4 := make(map[int]int, len(r.v4masks))
+	for k, v := range r.v4masks {
+		v4[k] = v
+	}
+	r.v4mu.RUnlock()
+
+	r.v6mu.RLock()
+	v6 := make(map[int]int, len(r.v6masks))
+	for k, v := range r.v6masks {
+		v6[k] = v
+	}
+	r.v6mu.RUnlock()
+
+	return v4, v6
 }
 
 // InsertIPv4 adds an IPv4 prefix to the RIB.
-//
-// The first octet is used as a direct array index into ipv4Root, skipping
-// 8 levels of trie traversal. Bits 9 through the prefix length are then
-// walked in the binary trie. Only octets 1–2 are traversed since we cap
-// at /24 (no internet prefix is longer than /24).
-//
-// Prefixes shorter than /8 are rejected and logged, as they don't exist
-// in the internet routing table.
 func (r *Rib) InsertIPv4(prefix netip.Prefix) {
 	if prefix.Addr().Is6() {
 		return
 	}
+	r.v4mu.Lock()
+	defer r.v4mu.Unlock()
+	r.insertIPv4Unlocked(prefix)
+}
 
+// InsertIPv4Batch adds multiple IPv4 prefixes to the RIB, acquiring the lock only once.
+func (r *Rib) InsertIPv4Batch(prefixes []netip.Prefix) {
+	r.v4mu.Lock()
+	defer r.v4mu.Unlock()
+	for _, p := range prefixes {
+		if p.Addr().Is4() {
+			r.insertIPv4Unlocked(p)
+		}
+	}
+}
+
+func (r *Rib) insertIPv4Unlocked(prefix netip.Prefix) {
 	mask := prefix.Bits()
 
-	// Guard: no internet IPv4 prefix is shorter than /8.
-	if mask < 8 {
-		log.Printf("rejecting IPv4 prefix %s: mask /%d is shorter than minimum /8", prefix, mask)
+	// Guard: no internet IPv4 prefix is shorter than /8 or longer than /24.
+	if mask < 8 || mask > 24 {
+		log.Printf("rejecting IPv4 prefix %s: mask /%d is outside allowed range /8–/24", prefix, mask)
 		return
 	}
-
-	r.mu.Lock()
-	defer r.mu.Unlock()
 
 	addr := prefix.Addr().As4()
 
 	// Direct array lookup by first octet — creates the entry node on first use.
 	if r.ipv4Root[addr[0]] == nil {
-		v4nodes++
 		r.ipv4Root[addr[0]] = &node{}
 	}
 	currentNode := r.ipv4Root[addr[0]]
@@ -141,19 +200,14 @@ func (r *Rib) InsertIPv4(prefix netip.Prefix) {
 	}
 
 	// Walk bits 9–24 through octets 1 and 2.
-	// Octet 0 was handled by the array index above.
-	// Octet 3 (bits 25–32) is never traversed since we cap at /24.
 	bitCount := 9
 	for i := 1; i < 3; i++ {
 		bits := intToBinBitwise(addr[i])
 		for _, bit := range bits {
 			if currentNode.children[bit] == nil {
-				v4nodes++
 				currentNode.children[bit] = &node{
 					parent: currentNode,
 				}
-			} else {
-				v4alreadycreated++
 			}
 			currentNode = currentNode.children[bit]
 			if bitCount == mask {
@@ -171,39 +225,45 @@ func (r *Rib) InsertIPv4(prefix netip.Prefix) {
 }
 
 // InsertIPv6 adds an IPv6 prefix to the RIB.
-//
-// Validates the prefix is within 2000::/3 (the only assigned global unicast
-// space) and that the mask is at least /8. The first byte is used as a direct
-// array index (offset by 0x20), skipping 8 levels of trie traversal.
-// Bits 9 through the prefix length are walked through octets 1–5, capping at /48.
 func (r *Rib) InsertIPv6(prefix netip.Prefix) {
 	if prefix.Addr().Is4() {
 		return
 	}
+	r.v6mu.Lock()
+	defer r.v6mu.Unlock()
+	r.insertIPv6Unlocked(prefix)
+}
 
+// InsertIPv6Batch adds multiple IPv6 prefixes to the RIB, acquiring the lock only once.
+func (r *Rib) InsertIPv6Batch(prefixes []netip.Prefix) {
+	r.v6mu.Lock()
+	defer r.v6mu.Unlock()
+	for _, p := range prefixes {
+		if p.Addr().Is6() {
+			r.insertIPv6Unlocked(p)
+		}
+	}
+}
+
+func (r *Rib) insertIPv6Unlocked(prefix netip.Prefix) {
 	addr := prefix.Addr().As16()
 	mask := prefix.Bits()
 
 	// Guard: all internet IPv6 prefixes must be within 2000::/3.
-	// The first byte of any address in 2000::/3 is in the range 0x20–0x3F.
 	if addr[0] < 0x20 || addr[0] > 0x3F {
 		log.Printf("rejecting IPv6 prefix %s: not within 2000::/3", prefix)
 		return
 	}
 
-	// Guard: no internet IPv6 prefix is shorter than /8.
-	if mask < 8 {
-		log.Printf("rejecting IPv6 prefix %s: mask /%d is shorter than minimum /8", prefix, mask)
+	// Guard: no internet IPv6 prefix is shorter than /8 or longer than /48.
+	if mask < 8 || mask > 48 {
+		log.Printf("rejecting IPv6 prefix %s: mask /%d is outside allowed range /8–/48", prefix, mask)
 		return
 	}
-
-	r.mu.Lock()
-	defer r.mu.Unlock()
 
 	// Map the first byte to array index 0–31 by subtracting 0x20.
 	idx := addr[0] - 0x20
 	if r.ipv6Root[idx] == nil {
-		v6nodes++
 		r.ipv6Root[idx] = &node{}
 	}
 	currentNode := r.ipv6Root[idx]
@@ -219,19 +279,14 @@ func (r *Rib) InsertIPv6(prefix netip.Prefix) {
 	}
 
 	// Walk bits 9–48 through octets 1–5.
-	// Octet 0 was handled by the array index above.
-	// Octets 6–15 (bits 49–128) are never traversed since we cap at /48.
 	bitCount := 9
 	for i := 1; i < 6; i++ {
 		bits := intToBinBitwise(addr[i])
 		for _, bit := range bits {
 			if currentNode.children[bit] == nil {
-				v6nodes++
 				currentNode.children[bit] = &node{
 					parent: currentNode,
 				}
-			} else {
-				v6alreadycreated++
 			}
 			currentNode = currentNode.children[bit]
 			if bitCount == mask {
@@ -248,22 +303,31 @@ func (r *Rib) InsertIPv6(prefix netip.Prefix) {
 }
 
 // DeleteIPv4 removes an IPv4 prefix from the RIB.
-//
-// Walks the trie to the node holding the prefix, clears it, then prunes
-// empty leaf nodes upward via deleteNode. If the array entry node itself
-// becomes empty (no children, no prefix), it is also freed.
 func (r *Rib) DeleteIPv4(prefix netip.Prefix) {
 	if prefix.Addr().Is6() {
 		return
 	}
+	r.v4mu.Lock()
+	defer r.v4mu.Unlock()
+	r.deleteIPv4Unlocked(prefix)
+}
 
+// DeleteIPv4Batch removes multiple IPv4 prefixes from the RIB, acquiring the lock only once.
+func (r *Rib) DeleteIPv4Batch(prefixes []netip.Prefix) {
+	r.v4mu.Lock()
+	defer r.v4mu.Unlock()
+	for _, p := range prefixes {
+		if p.Addr().Is4() {
+			r.deleteIPv4Unlocked(p)
+		}
+	}
+}
+
+func (r *Rib) deleteIPv4Unlocked(prefix netip.Prefix) {
 	mask := prefix.Bits()
-	if mask < 8 {
+	if mask < 8 || mask > 24 {
 		return
 	}
-
-	r.mu.Lock()
-	defer r.mu.Unlock()
 
 	addr := prefix.Addr().As4()
 
@@ -321,23 +385,33 @@ func (r *Rib) DeleteIPv4(prefix netip.Prefix) {
 }
 
 // DeleteIPv6 removes an IPv6 prefix from the RIB.
-//
-// Same approach as DeleteIPv4 but for the IPv6 trie. Validates the prefix
-// is in 2000::/3 and at least /8 before attempting deletion.
 func (r *Rib) DeleteIPv6(prefix netip.Prefix) {
 	if prefix.Addr().Is4() {
 		return
 	}
+	r.v6mu.Lock()
+	defer r.v6mu.Unlock()
+	r.deleteIPv6Unlocked(prefix)
+}
 
+// DeleteIPv6Batch removes multiple IPv6 prefixes from the RIB, acquiring the lock only once.
+func (r *Rib) DeleteIPv6Batch(prefixes []netip.Prefix) {
+	r.v6mu.Lock()
+	defer r.v6mu.Unlock()
+	for _, p := range prefixes {
+		if p.Addr().Is6() {
+			r.deleteIPv6Unlocked(p)
+		}
+	}
+}
+
+func (r *Rib) deleteIPv6Unlocked(prefix netip.Prefix) {
 	addr := prefix.Addr().As16()
 	mask := prefix.Bits()
 
-	if mask < 8 || addr[0] < 0x20 || addr[0] > 0x3F {
+	if mask < 8 || mask > 48 || addr[0] < 0x20 || addr[0] > 0x3F {
 		return
 	}
-
-	r.mu.Lock()
-	defer r.mu.Unlock()
 
 	idx := addr[0] - 0x20
 	if r.ipv6Root[idx] == nil {
@@ -390,7 +464,7 @@ func (r *Rib) DeleteIPv6(prefix netip.Prefix) {
 // deleteNode recursively prunes empty leaf nodes upward through the trie.
 // A node is prunable only if it has no prefix and no children.
 // Recursion stops at array entry nodes (parent == nil), which are cleaned
-// up by the caller (DeleteIPv4/DeleteIPv6).
+// up by the caller.
 func deleteNode(node *node) {
 	// ensure we don't fall off the top of the tree.
 	if node.parent == nil {
@@ -405,7 +479,6 @@ func deleteNode(node *node) {
 				node.parent.children[j] = nil
 				// keep deleting empty nodes.
 				deleteNode(node.parent)
-				nodes++
 				return
 			}
 		}
@@ -421,10 +494,8 @@ func (r *Rib) SearchIPv4(ip netip.Addr) *netip.Prefix {
 	if ip.Is6() {
 		return nil
 	}
-	start := time.Now()
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	defer fmt.Printf("IP lookup took %s\n", time.Since(start).String())
+	r.v4mu.RLock()
+	defer r.v4mu.RUnlock()
 
 	lpm := &netip.Prefix{}
 	addr := ip.As4()
@@ -441,8 +512,7 @@ func (r *Rib) SearchIPv4(ip netip.Addr) *netip.Prefix {
 	}
 
 	// Walk bits 9–24, updating LPM at each node that holds a prefix.
-	// Uses a labeled break so that hitting a nil child exits both loops,
-	// preventing the outer loop from continuing with misaligned bits.
+	// Uses a labeled break so that hitting a nil child exits both loops.
 v4walk:
 	for i := 1; i < 3; i++ {
 		bits := intToBinBitwise(addr[i])
@@ -471,10 +541,8 @@ func (r *Rib) SearchIPv6(ip netip.Addr) *netip.Prefix {
 	if ip.Is4() {
 		return nil
 	}
-	start := time.Now()
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	defer fmt.Printf("IP lookup took %s\n", time.Since(start).String())
+	r.v6mu.RLock()
+	defer r.v6mu.RUnlock()
 
 	lpm := &netip.Prefix{}
 	addr := ip.As16()
@@ -518,8 +586,6 @@ v6walk:
 
 // intToBinBitwise will take a uint8 and return a slice
 // of 8 bits representing the binary version
-// TODO: test if it's slower to pass in bit length to only get back
-// the amount of bits we require
 func intToBinBitwise(num uint8) []uint8 {
 	res := make([]uint8, 0, 8)
 	for i := 7; i >= 0; i-- {
@@ -531,20 +597,4 @@ func intToBinBitwise(num uint8) []uint8 {
 		}
 	}
 	return res
-}
-
-func (r *Rib) getSubnets() (map[int]int, map[int]int) {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-
-	// Return copies so callers can't mutate internal state.
-	v4 := make(map[int]int, len(r.v4masks))
-	for k, v := range r.v4masks {
-		v4[k] = v
-	}
-	v6 := make(map[int]int, len(r.v6masks))
-	for k, v := range r.v6masks {
-		v6[k] = v
-	}
-	return v4, v6
 }
