@@ -877,7 +877,6 @@ func TestAttributeDeduplication(t *testing.T) {
 	router := rib.GetNewRib()
 
 	attr := &rib.RouteAttributes{
-		NextHop:     netip.MustParseAddr("10.0.0.1"),
 		AsPath:      []uint32{100, 200, 300},
 		Communities: []uint32{65000},
 		LocalPref:   100,

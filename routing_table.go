@@ -1,10 +1,12 @@
 package routing_table
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"net/netip"
 	"sync"
+	"time"
 )
 
 type router struct {
@@ -47,25 +49,33 @@ type Rib struct {
 	// across all prefixes, drastically reducing memory usage.
 	attrTable *attrTable
 
-	v4Count int
-	v6Count int
-	v4masks map[int]int
-	v6masks map[int]int
+	v4Count     int
+	v6Count     int
+	v4NodeCount uint64
+	v6NodeCount uint64
+	v4masks     map[int]int
+	v6masks     map[int]int
 }
 
 
 
+// LargeCommunity represents a BGP Large Community (RFC 8092).
+type LargeCommunity struct {
+	GlobalAdmin uint32
+	LocalData1  uint32
+	LocalData2  uint32
+}
+
 // RouteAttributes holds the BGP path attributes.
 type RouteAttributes struct {
-	NextHop     netip.Addr
-	AsPath      []uint32
-	Communities []uint32
-	LocalPref   uint32
-	MED         uint32
+	AsPath           []uint32
+	Communities      []uint32
+	LargeCommunities []LargeCommunity
 
 	// Internal fields for deduplication and garbage collection
-	hash     uint64
-	refCount uint32
+	hash      uint64
+	LocalPref uint32
+	refCount  uint32
 }
 
 // Route represents an entry in the RIB.
@@ -85,9 +95,9 @@ func (r *Route) String() string {
 // (bit 0 and bit 1). A non-nil route indicates a route terminates at this depth.
 // The parent pointer enables upward pruning when routes are deleted.
 type node struct {
-	children [2]*node
-	route    *Route
-	parent   *node
+	children   [2]*node
+	attributes *RouteAttributes
+	parent     *node
 }
 
 func GetNewRouter() router {
@@ -120,6 +130,8 @@ func (r *Rib) Reset() {
 	r.ipv6Root = [32]*node{}
 	r.v4Count = 0
 	r.v6Count = 0
+	r.v4NodeCount = 0
+	r.v6NodeCount = 0
 	r.v4masks = make(map[int]int)
 	r.v6masks = make(map[int]int)
 	r.attrTable = newAttrTable()
@@ -227,21 +239,20 @@ func (r *Rib) insertIPv4Unlocked(route Route) {
 	// Direct array lookup by first octet — creates the entry node on first use.
 	if r.ipv4Root[addr[0]] == nil {
 		r.ipv4Root[addr[0]] = &node{}
+		r.v4NodeCount++
 	}
 	currentNode := r.ipv4Root[addr[0]]
 
 	// A /8 prefix stores directly on the array entry node.
 	if mask == 8 {
-		if currentNode.route == nil {
+		if currentNode.attributes == nil {
 			r.v4Count++
 			r.v4masks[mask]++
-			newRoute := route
-			newRoute.Attributes = dedupAttr
-			currentNode.route = &newRoute
+			currentNode.attributes = dedupAttr
 		} else {
 			// Prefix exists, release old attributes and update in place
-			r.attrTable.release(currentNode.route.Attributes)
-			currentNode.route.Attributes = dedupAttr
+			r.attrTable.release(currentNode.attributes)
+			currentNode.attributes = dedupAttr
 		}
 		return
 	}
@@ -255,18 +266,17 @@ func (r *Rib) insertIPv4Unlocked(route Route) {
 				currentNode.children[bit] = &node{
 					parent: currentNode,
 				}
+				r.v4NodeCount++
 			}
 			currentNode = currentNode.children[bit]
 			if bitCount == mask {
-				if currentNode.route == nil {
+				if currentNode.attributes == nil {
 					r.v4Count++
 					r.v4masks[mask]++
-					newRoute := route
-					newRoute.Attributes = dedupAttr
-					currentNode.route = &newRoute
+					currentNode.attributes = dedupAttr
 				} else {
-					r.attrTable.release(currentNode.route.Attributes)
-					currentNode.route.Attributes = dedupAttr
+					r.attrTable.release(currentNode.attributes)
+					currentNode.attributes = dedupAttr
 				}
 				return
 			}
@@ -319,20 +329,19 @@ func (r *Rib) insertIPv6Unlocked(route Route) {
 	idx := addr[0] - 0x20
 	if r.ipv6Root[idx] == nil {
 		r.ipv6Root[idx] = &node{}
+		r.v6NodeCount++
 	}
 	currentNode := r.ipv6Root[idx]
 
 	// A /8 prefix stores directly on the array entry node.
 	if mask == 8 {
-		if currentNode.route == nil {
+		if currentNode.attributes == nil {
 			r.v6Count++
 			r.v6masks[mask]++
-			newRoute := route
-			newRoute.Attributes = dedupAttr
-			currentNode.route = &newRoute
+			currentNode.attributes = dedupAttr
 		} else {
-			r.attrTable.release(currentNode.route.Attributes)
-			currentNode.route.Attributes = dedupAttr
+			r.attrTable.release(currentNode.attributes)
+			currentNode.attributes = dedupAttr
 		}
 		return
 	}
@@ -346,18 +355,17 @@ func (r *Rib) insertIPv6Unlocked(route Route) {
 				currentNode.children[bit] = &node{
 					parent: currentNode,
 				}
+				r.v6NodeCount++
 			}
 			currentNode = currentNode.children[bit]
 			if bitCount == mask {
-				if currentNode.route == nil {
+				if currentNode.attributes == nil {
 					r.v6Count++
 					r.v6masks[mask]++
-					newRoute := route
-					newRoute.Attributes = dedupAttr
-					currentNode.route = &newRoute
+					currentNode.attributes = dedupAttr
 				} else {
-					r.attrTable.release(currentNode.route.Attributes)
-					currentNode.route.Attributes = dedupAttr
+					r.attrTable.release(currentNode.attributes)
+					currentNode.attributes = dedupAttr
 				}
 				return
 			}
@@ -403,16 +411,17 @@ func (r *Rib) deleteIPv4Unlocked(prefix netip.Prefix) {
 	// Deleting a /8: clear route on the array entry node.
 	if mask == 8 {
 		// Only decrement counters if the prefix actually exists.
-		if currentNode.route == nil {
+		if currentNode.attributes == nil {
 			return
 		}
-		r.attrTable.release(currentNode.route.Attributes)
+		r.attrTable.release(currentNode.attributes)
 		r.v4Count--
-		currentNode.route = nil
+		currentNode.attributes = nil
 		r.v4masks[mask]--
 		// Free the array entry if it has no children either.
 		if currentNode.children[0] == nil && currentNode.children[1] == nil {
 			r.ipv4Root[addr[0]] = nil
+			r.v4NodeCount--
 		}
 		return
 	}
@@ -429,19 +438,20 @@ func (r *Rib) deleteIPv4Unlocked(prefix netip.Prefix) {
 			currentNode = currentNode.children[bit]
 			if bitCount == mask {
 				// Only decrement counters if the prefix actually exists.
-				if currentNode.route == nil {
+				if currentNode.attributes == nil {
 					return
 				}
-				r.attrTable.release(currentNode.route.Attributes)
+				r.attrTable.release(currentNode.attributes)
 				r.v4Count--
-				currentNode.route = nil
+				currentNode.attributes = nil
 				r.v4masks[mask]--
 				// Prune empty nodes upward. deleteNode stops at parent == nil
 				// (the array entry node), so we clean that up separately.
-				deleteNode(currentNode)
+				r.v4NodeCount -= deleteNode(currentNode)
 				root := r.ipv4Root[addr[0]]
-				if root != nil && root.children[0] == nil && root.children[1] == nil && root.route == nil {
+				if root != nil && root.children[0] == nil && root.children[1] == nil && root.attributes == nil {
 					r.ipv4Root[addr[0]] = nil
+					r.v4NodeCount--
 				}
 				return
 			}
@@ -487,15 +497,16 @@ func (r *Rib) deleteIPv6Unlocked(prefix netip.Prefix) {
 
 	// Deleting a /8: clear route on the array entry node.
 	if mask == 8 {
-		if currentNode.route == nil {
+		if currentNode.attributes == nil {
 			return
 		}
-		r.attrTable.release(currentNode.route.Attributes)
+		r.attrTable.release(currentNode.attributes)
 		r.v6Count--
-		currentNode.route = nil
+		currentNode.attributes = nil
 		r.v6masks[mask]--
 		if currentNode.children[0] == nil && currentNode.children[1] == nil {
 			r.ipv6Root[idx] = nil
+			r.v6NodeCount--
 		}
 		return
 	}
@@ -510,17 +521,18 @@ func (r *Rib) deleteIPv6Unlocked(prefix netip.Prefix) {
 			}
 			currentNode = currentNode.children[bit]
 			if bitCount == mask {
-				if currentNode.route == nil {
+				if currentNode.attributes == nil {
 					return
 				}
-				r.attrTable.release(currentNode.route.Attributes)
+				r.attrTable.release(currentNode.attributes)
 				r.v6Count--
-				currentNode.route = nil
+				currentNode.attributes = nil
 				r.v6masks[mask]--
-				deleteNode(currentNode)
+				r.v6NodeCount -= deleteNode(currentNode)
 				root := r.ipv6Root[idx]
-				if root != nil && root.children[0] == nil && root.children[1] == nil && root.route == nil {
+				if root != nil && root.children[0] == nil && root.children[1] == nil && root.attributes == nil {
 					r.ipv6Root[idx] = nil
+					r.v6NodeCount--
 				}
 				return
 			}
@@ -533,24 +545,24 @@ func (r *Rib) deleteIPv6Unlocked(prefix netip.Prefix) {
 // A node is prunable only if it has no prefix and no children.
 // Recursion stops at array entry nodes (parent == nil), which are cleaned
 // up by the caller.
-func deleteNode(node *node) {
+func deleteNode(node *node) uint64 {
 	// ensure we don't fall off the top of the tree.
 	if node.parent == nil {
-		return
+		return 0
 	}
 
 	// a node can only be deleted if it has no prefix and no children.
-	if node.children[0] == nil && node.children[1] == nil && node.route == nil {
+	if node.children[0] == nil && node.children[1] == nil && node.attributes == nil {
 		// each node can have two children, so need to check both.
 		for j := 0; j < 2; j++ {
 			if node.parent.children[j] == node {
 				node.parent.children[j] = nil
 				// keep deleting empty nodes.
-				deleteNode(node.parent)
-				return
+				return 1 + deleteNode(node.parent)
 			}
 		}
 	}
+	return 0
 }
 
 // SearchIPv4 performs a longest prefix match (LPM) lookup for an IPv4 address.
@@ -565,7 +577,8 @@ func (r *Rib) SearchIPv4(ip netip.Addr) *Route {
 	r.v4mu.RLock()
 	defer r.v4mu.RUnlock()
 
-	var lpm *Route
+	var lpmAttr *RouteAttributes
+	var lpmLen int
 	addr := ip.As4()
 
 	// Look up the array entry for the first octet.
@@ -575,28 +588,35 @@ func (r *Rib) SearchIPv4(ip netip.Addr) *Route {
 	currentNode := r.ipv4Root[addr[0]]
 
 	// Check for a /8 match at the array entry node.
-	if currentNode.route != nil {
-		lpm = currentNode.route
+	if currentNode.attributes != nil {
+		lpmAttr = currentNode.attributes
+		lpmLen = 8
 	}
 
 	// Walk bits 9–24, updating LPM at each node that holds a route.
 	// Uses a labeled break so that hitting a nil child exits both loops.
+	bitCount := 9
 v4walk:
 	for i := 1; i < 3; i++ {
 		bits := intToBinBitwise(addr[i])
 		for _, bit := range bits {
 			if currentNode.children[bit] != nil {
 				currentNode = currentNode.children[bit]
-				if currentNode.route != nil {
-					lpm = currentNode.route
+				if currentNode.attributes != nil {
+					lpmAttr = currentNode.attributes
+					lpmLen = bitCount
 				}
 			} else {
 				break v4walk
 			}
+			bitCount++
 		}
 	}
-	if lpm != nil && lpm.Prefix.Contains(ip) {
-		return lpm
+	if lpmAttr != nil {
+		return &Route{
+			Prefix:     netip.PrefixFrom(ip, lpmLen).Masked(),
+			Attributes: lpmAttr,
+		}
 	}
 	return nil
 }
@@ -612,7 +632,8 @@ func (r *Rib) SearchIPv6(ip netip.Addr) *Route {
 	r.v6mu.RLock()
 	defer r.v6mu.RUnlock()
 
-	var lpm *Route
+	var lpmAttr *RouteAttributes
+	var lpmLen int
 	addr := ip.As16()
 
 	// Only addresses in 2000::/3 (first byte 0x20–0x3F) are supported.
@@ -627,27 +648,34 @@ func (r *Rib) SearchIPv6(ip netip.Addr) *Route {
 	currentNode := r.ipv6Root[idx]
 
 	// Check for a match at the array entry node (e.g., a /8 route).
-	if currentNode.route != nil {
-		lpm = currentNode.route
+	if currentNode.attributes != nil {
+		lpmAttr = currentNode.attributes
+		lpmLen = 8
 	}
 
 	// Walk bits 9–48, updating LPM at each node that holds a route.
+	bitCount := 9
 v6walk:
 	for i := 1; i < 6; i++ {
 		bits := intToBinBitwise(addr[i])
 		for _, bit := range bits {
 			if currentNode.children[bit] != nil {
 				currentNode = currentNode.children[bit]
-				if currentNode.route != nil {
-					lpm = currentNode.route
+				if currentNode.attributes != nil {
+					lpmAttr = currentNode.attributes
+					lpmLen = bitCount
 				}
 			} else {
 				break v6walk
 			}
+			bitCount++
 		}
 	}
-	if lpm != nil && lpm.Prefix.Contains(ip) {
-		return lpm
+	if lpmAttr != nil {
+		return &Route{
+			Prefix:     netip.PrefixFrom(ip, lpmLen).Masked(),
+			Attributes: lpmAttr,
+		}
 	}
 	return nil
 }
@@ -665,4 +693,96 @@ func intToBinBitwise(num uint8) []uint8 {
 		}
 	}
 	return res
+}
+
+type MemoryStats struct {
+	RoutingTablesEffective   uint64
+	RoutingTablesOverhead    uint64
+	RouteAttributesEffective uint64
+	RouteAttributesOverhead  uint64
+}
+
+func formatBytes(b uint64) string {
+	if b >= 1024*1024 {
+		return fmt.Sprintf("%6.1f MB", float64(b)/1024/1024)
+	} else if b >= 1024 {
+		return fmt.Sprintf("%6.1f kB", float64(b)/1024)
+	}
+	return fmt.Sprintf("%6.1f  B", float64(b))
+}
+
+func (s MemoryStats) String() string {
+	return fmt.Sprintf("BIRD memory usage\n                  Effective    Overhead\nRouting tables:   %9s   %9s\nRoute attributes: %9s   %9s\n",
+		formatBytes(s.RoutingTablesEffective), formatBytes(s.RoutingTablesOverhead),
+		formatBytes(s.RouteAttributesEffective), formatBytes(s.RouteAttributesOverhead))
+}
+
+// MemoryUsage calculates and returns the memory statistics of the RIB matching BIRD's output format.
+func (r *Rib) MemoryUsage() MemoryStats {
+	r.v4mu.RLock()
+	v4nodes := r.v4NodeCount
+	r.v4mu.RUnlock()
+
+	r.v6mu.RLock()
+	v6nodes := r.v6NodeCount
+	r.v6mu.RUnlock()
+
+	attrCount, sliceBytes := r.attrTable.GetStats()
+
+	// Effective Routing Tables: nodes (32 bytes)
+	rtEffective := (v4nodes + v6nodes) * 32
+	// Overhead Routing Tables: IPv4 Root Array (256 * 8) + IPv6 Root Array (32 * 8) = 2304 bytes
+	rtOverhead := uint64(2304)
+
+	// Effective Route Attributes: RouteAttributes structs (88 bytes) + slice backing arrays
+	raEffective := attrCount*88 + sliceBytes
+	// Overhead Route Attributes: Go Map overhead (estimate ~48 bytes per entry)
+	raOverhead := attrCount * 48
+
+	return MemoryStats{
+		RoutingTablesEffective:   rtEffective,
+		RoutingTablesOverhead:    rtOverhead,
+		RouteAttributesEffective: raEffective,
+		RouteAttributesOverhead:  raOverhead,
+	}
+}
+
+// StartLogging spawns a background goroutine that logs the RIB statistics once per minute.
+// It logs the IPv4 and IPv6 route counts, prefix distributions (ignoring zero counts),
+// and the BIRD-formatted memory usage. The goroutine stops when the provided context is canceled.
+func (r *Rib) StartLogging(ctx context.Context) {
+	ticker := time.NewTicker(time.Minute)
+	go func() {
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				v4Count := r.V4Count()
+				v6Count := r.V6Count()
+				v4m, v6m := r.GetSubnets()
+
+				// Filter masks with 0 count
+				v4filtered := make(map[int]int)
+				for k, v := range v4m {
+					if v > 0 {
+						v4filtered[k] = v
+					}
+				}
+
+				v6filtered := make(map[int]int)
+				for k, v := range v6m {
+					if v > 0 {
+						v6filtered[k] = v
+					}
+				}
+
+				memUsage := r.MemoryUsage().String()
+
+				log.Printf("RIB Stats:\nIPv4 Routes: %d\nIPv6 Routes: %d\nIPv4 Distribution: %v\nIPv6 Distribution: %v\n%s",
+					v4Count, v6Count, v4filtered, v6filtered, memUsage)
+			}
+		}
+	}()
 }
