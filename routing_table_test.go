@@ -1037,3 +1037,57 @@ func TestLookupRejectsOutOfRange(t *testing.T) {
 	}
 }
 
+// TestPrefixesByOriginASN verifies that we can retrieve all prefixes originated
+// by a specific ASN using a full trie walk.
+func TestPrefixesByOriginASN(t *testing.T) {
+	router := rib.GetNewRib()
+
+	// Prefixes originated by AS 100
+	routes100 := []string{"10.0.0.0/8", "10.1.0.0/16", "2001:db8::/32"}
+	attr100 := &rib.RouteAttributes{AsPath: []uint32{500, 100}}
+	for _, route := range routes100 {
+		if netip.MustParsePrefix(route).Addr().Is4() {
+			router.InsertIPv4(rib.Route{Prefix: netip.MustParsePrefix(route), Attributes: attr100})
+		} else {
+			router.InsertIPv6(rib.Route{Prefix: netip.MustParsePrefix(route), Attributes: attr100})
+		}
+	}
+
+	// Prefixes originated by AS 200
+	routes200 := []string{"192.168.1.0/24", "2001:db8:1::/48"}
+	attr200 := &rib.RouteAttributes{AsPath: []uint32{600, 200}}
+	for _, route := range routes200 {
+		if netip.MustParsePrefix(route).Addr().Is4() {
+			router.InsertIPv4(rib.Route{Prefix: netip.MustParsePrefix(route), Attributes: attr200})
+		} else {
+			router.InsertIPv6(rib.Route{Prefix: netip.MustParsePrefix(route), Attributes: attr200})
+		}
+	}
+
+	// Prefix originated by AS 300, but empty path edge case (should not crash, but won't match normal searches)
+	attrEmpty := &rib.RouteAttributes{AsPath: []uint32{}}
+	router.InsertIPv4(rib.Route{Prefix: netip.MustParsePrefix("172.16.0.0/12"), Attributes: attrEmpty})
+
+	v4, v6 := router.PrefixesByOriginASN(100)
+	if len(v4) != 2 {
+		t.Errorf("expected 2 v4 prefixes for AS 100, got %d", len(v4))
+	}
+	if len(v6) != 1 {
+		t.Errorf("expected 1 v6 prefix for AS 100, got %d", len(v6))
+	}
+
+	v4, v6 = router.PrefixesByOriginASN(200)
+	if len(v4) != 1 || v4[0] != netip.MustParsePrefix("192.168.1.0/24") {
+		t.Errorf("expected 1 v4 prefix for AS 200 (192.168.1.0/24), got %v", v4)
+	}
+	if len(v6) != 1 || v6[0] != netip.MustParsePrefix("2001:db8:1::/48") {
+		t.Errorf("expected 1 v6 prefix for AS 200 (2001:db8:1::/48), got %v", v6)
+	}
+
+	// Query ASN not in table
+	v4, v6 = router.PrefixesByOriginASN(999)
+	if len(v4) != 0 || len(v6) != 0 {
+		t.Errorf("expected 0 prefixes for AS 999, got v4=%d, v6=%d", len(v4), len(v6))
+	}
+}
+
