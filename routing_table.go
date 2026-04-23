@@ -5,6 +5,9 @@ import (
 	"fmt"
 	"log"
 	"net/netip"
+	"regexp"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -905,12 +908,8 @@ func (r *Rib) StartLogging(ctx context.Context) {
 }
 
 // PrefixesByOriginASN walks the entire RIB and returns all IPv4 and IPv6
-// prefixes whose origin ASN (last element in the AS path) matches the given ASN.
-//
-// This is an O(nodes) trie scan. With a full internet routing table (~1.2M
-// prefixes), this completes in single-digit milliseconds. The prefix address
-// is reconstructed during traversal by tracking accumulated bits.
-func (r *Rib) PrefixesByOriginASN(asn uint32) (v4 []netip.Prefix, v6 []netip.Prefix) {
+// routes whose origin ASN (last element in the AS path) matches the given ASN.
+func (r *Rib) PrefixesByOriginASN(asn uint32) (v4 []Route, v6 []Route) {
 	// Walk IPv4 trie
 	r.v4mu.RLock()
 	for i := 0; i < 256; i++ {
@@ -937,15 +936,17 @@ func (r *Rib) PrefixesByOriginASN(asn uint32) (v4 []netip.Prefix, v6 []netip.Pre
 }
 
 // collectByOriginV4 recursively walks the IPv4 trie, reconstructing the prefix
-// address by setting bits as it descends. depth tracks the current prefix length
-// (starts at 8 since the first byte is handled by the root array index).
-func collectByOriginV4(n *node, asn uint32, addr [4]byte, depth int, results *[]netip.Prefix) {
+// address by setting bits as it descends.
+func collectByOriginV4(n *node, asn uint32, addr [4]byte, depth int, results *[]Route) {
 	// Check if this node has a route with matching origin ASN
 	if n.attributes != nil {
 		path := n.attributes.AsPath
 		if len(path) > 0 && path[len(path)-1] == asn {
 			ip := netip.AddrFrom4(addr)
-			*results = append(*results, netip.PrefixFrom(ip, depth))
+			*results = append(*results, Route{
+				Prefix:     netip.PrefixFrom(ip, depth),
+				Attributes: n.attributes,
+			})
 		}
 	}
 
@@ -968,14 +969,16 @@ func collectByOriginV4(n *node, asn uint32, addr [4]byte, depth int, results *[]
 }
 
 // collectByOriginV6 recursively walks the IPv6 trie, reconstructing the prefix
-// address by setting bits as it descends. depth tracks the current prefix length
-// (starts at 8 since the first byte is handled by the root array index).
-func collectByOriginV6(n *node, asn uint32, addr [16]byte, depth int, results *[]netip.Prefix) {
+// address by setting bits as it descends.
+func collectByOriginV6(n *node, asn uint32, addr [16]byte, depth int, results *[]Route) {
 	if n.attributes != nil {
 		path := n.attributes.AsPath
 		if len(path) > 0 && path[len(path)-1] == asn {
 			ip := netip.AddrFrom16(addr)
-			*results = append(*results, netip.PrefixFrom(ip, depth))
+			*results = append(*results, Route{
+				Prefix:     netip.PrefixFrom(ip, depth),
+				Attributes: n.attributes,
+			})
 		}
 	}
 
@@ -995,4 +998,104 @@ func collectByOriginV6(n *node, asn uint32, addr [16]byte, depth int, results *[
 			collectByOriginV6(n.children[bit], asn, nextAddr, depth+1, results)
 		}
 	}
+}
+
+// PrefixesByAsPathRegex walks the entire RIB and returns all IPv4 and IPv6
+// routes whose AS path matches the given regular expression.
+func (r *Rib) PrefixesByAsPathRegex(re *regexp.Regexp) (v4 []Route, v6 []Route) {
+	// Walk IPv4 trie
+	r.v4mu.RLock()
+	for i := 0; i < 256; i++ {
+		if r.ipv4Root[i] != nil {
+			var addr [4]byte
+			addr[0] = byte(i)
+			collectByAsPathRegexV4(r.ipv4Root[i], re, addr, 8, &v4)
+		}
+	}
+	r.v4mu.RUnlock()
+
+	// Walk IPv6 trie
+	r.v6mu.RLock()
+	for i := 0; i < 32; i++ {
+		if r.ipv6Root[i] != nil {
+			var addr [16]byte
+			addr[0] = byte(i + 0x20)
+			collectByAsPathRegexV6(r.ipv6Root[i], re, addr, 8, &v6)
+		}
+	}
+	r.v6mu.RUnlock()
+
+	return v4, v6
+}
+
+// collectByAsPathRegexV4 recursively walks the IPv4 trie, reconstructing the prefix
+// address and matching the AS path against a regex.
+func collectByAsPathRegexV4(n *node, re *regexp.Regexp, addr [4]byte, depth int, results *[]Route) {
+	if n.attributes != nil {
+		if re.MatchString(n.attributes.ASPathString()) {
+			ip := netip.AddrFrom4(addr)
+			*results = append(*results, Route{
+				Prefix:     netip.PrefixFrom(ip, depth),
+				Attributes: n.attributes,
+			})
+		}
+	}
+
+	if depth >= 24 {
+		return
+	}
+
+	for bit := 0; bit < 2; bit++ {
+		if n.children[bit] != nil {
+			nextAddr := addr
+			byteIdx := depth / 8
+			bitPos := uint(7 - (depth % 8))
+			if bit == 1 {
+				nextAddr[byteIdx] |= 1 << bitPos
+			}
+			collectByAsPathRegexV4(n.children[bit], re, nextAddr, depth+1, results)
+		}
+	}
+}
+
+// collectByAsPathRegexV6 recursively walks the IPv6 trie, reconstructing the prefix
+// address and matching the AS path against a regex.
+func collectByAsPathRegexV6(n *node, re *regexp.Regexp, addr [16]byte, depth int, results *[]Route) {
+	if n.attributes != nil {
+		if re.MatchString(n.attributes.ASPathString()) {
+			ip := netip.AddrFrom16(addr)
+			*results = append(*results, Route{
+				Prefix:     netip.PrefixFrom(ip, depth),
+				Attributes: n.attributes,
+			})
+		}
+	}
+
+	if depth >= 48 {
+		return
+	}
+
+	for bit := 0; bit < 2; bit++ {
+		if n.children[bit] != nil {
+			nextAddr := addr
+			byteIdx := depth / 8
+			bitPos := uint(7 - (depth % 8))
+			if bit == 1 {
+				nextAddr[byteIdx] |= 1 << bitPos
+			}
+			collectByAsPathRegexV6(n.children[bit], re, nextAddr, depth+1, results)
+		}
+	}
+}
+
+// ASPathString returns the AS path as a space-separated string.
+func (ra *RouteAttributes) ASPathString() string {
+	if len(ra.AsPath) == 0 {
+		return ""
+	}
+	parts := make([]string, len(ra.AsPath))
+	for i, asn := range ra.AsPath {
+		parts[i] = strconv.FormatUint(uint64(asn), 10)
+	}
+	return strings.Join(parts, " ")
 }
