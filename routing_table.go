@@ -154,6 +154,48 @@ func (n *node) bestPath() *RouteAttributes {
 	return bestAttr
 }
 
+// SelectBest returns the best route from a slice of candidate routes using deterministic BGP selection rules.
+func SelectBest(routes []Route) *Route {
+	if len(routes) == 0 {
+		return nil
+	}
+	best := &routes[0]
+	for i := 1; i < len(routes); i++ {
+		curr := &routes[i]
+		if curr.Attributes == nil {
+			continue
+		}
+		if best.Attributes == nil {
+			best = curr
+			continue
+		}
+
+		// 1. Higher LocalPref
+		if curr.Attributes.LocalPref > best.Attributes.LocalPref {
+			best = curr
+			continue
+		}
+		if curr.Attributes.LocalPref < best.Attributes.LocalPref {
+			continue
+		}
+
+		// 2. Shortest AS path
+		if len(curr.Attributes.AsPath) < len(best.Attributes.AsPath) {
+			best = curr
+			continue
+		}
+		if len(curr.Attributes.AsPath) > len(best.Attributes.AsPath) {
+			continue
+		}
+
+		// 3. Lowest PathID as tiebreaker
+		if curr.PathID < best.PathID {
+			best = curr
+		}
+	}
+	return best
+}
+
 func GetNewRouter() router {
 	return router{}
 }
@@ -224,6 +266,9 @@ func (r *Rib) PrintRib() {
 
 // V4Count returns the total number of IPv4 prefixes in the RIB.
 func (r *Rib) V4Count() int {
+	if r.v4mu == nil {
+		return 0
+	}
 	r.v4mu.RLock()
 	defer r.v4mu.RUnlock()
 	return r.v4Count
@@ -231,6 +276,9 @@ func (r *Rib) V4Count() int {
 
 // V6Count returns the total number of IPv6 prefixes in the RIB.
 func (r *Rib) V6Count() int {
+	if r.v6mu == nil {
+		return 0
+	}
 	r.v6mu.RLock()
 	defer r.v6mu.RUnlock()
 	return r.v6Count
@@ -238,6 +286,9 @@ func (r *Rib) V6Count() int {
 
 // GetSubnets returns a copy of the subnet mask distributions for v4 and v6.
 func (r *Rib) GetSubnets() (map[int]int, map[int]int) {
+	if r.v4mu == nil || r.v6mu == nil {
+		return nil, nil
+	}
 	r.v4mu.RLock()
 	v4 := make(map[int]int, len(r.v4masks))
 	for k, v := range r.v4masks {
@@ -1258,6 +1309,90 @@ func collectByAsPathRegexV6(n *node, re *regexp.Regexp, addr [16]byte, depth int
 				nextAddr[byteIdx] |= 1 << bitPos
 			}
 			collectByAsPathRegexV6(n.children[bit], re, nextAddr, depth+1, results)
+		}
+	}
+}
+
+// AllPrefixesIPv4 returns all IPv4 prefixes currently in the RIB.
+func (r *Rib) AllPrefixesIPv4() []netip.Prefix {
+	if r.v4mu == nil {
+		return nil
+	}
+	var prefixes []netip.Prefix
+	r.v4mu.RLock()
+	defer r.v4mu.RUnlock()
+
+	for i := 0; i < 256; i++ {
+		if r.ipv4Root[i] != nil {
+			var addr [4]byte
+			addr[0] = byte(i)
+			collectPrefixesV4(r.ipv4Root[i], addr, 8, &prefixes)
+		}
+	}
+	return prefixes
+}
+
+// AllPrefixesIPv6 returns all IPv6 prefixes currently in the RIB.
+func (r *Rib) AllPrefixesIPv6() []netip.Prefix {
+	if r.v6mu == nil {
+		return nil
+	}
+	var prefixes []netip.Prefix
+	r.v6mu.RLock()
+	defer r.v6mu.RUnlock()
+
+	for i := 0; i < 32; i++ {
+		if r.ipv6Root[i] != nil {
+			var addr [16]byte
+			addr[0] = byte(i + 0x20)
+			collectPrefixesV6(r.ipv6Root[i], addr, 8, &prefixes)
+		}
+	}
+	return prefixes
+}
+
+func collectPrefixesV4(n *node, addr [4]byte, depth int, results *[]netip.Prefix) {
+	if len(n.paths) > 0 {
+		ip := netip.AddrFrom4(addr)
+		*results = append(*results, netip.PrefixFrom(ip, depth))
+	}
+
+	if depth >= 24 {
+		return
+	}
+
+	for bit := 0; bit < 2; bit++ {
+		if n.children[bit] != nil {
+			nextAddr := addr
+			byteIdx := depth / 8
+			bitPos := uint(7 - (depth % 8))
+			if bit == 1 {
+				nextAddr[byteIdx] |= 1 << bitPos
+			}
+			collectPrefixesV4(n.children[bit], nextAddr, depth+1, results)
+		}
+	}
+}
+
+func collectPrefixesV6(n *node, addr [16]byte, depth int, results *[]netip.Prefix) {
+	if len(n.paths) > 0 {
+		ip := netip.AddrFrom16(addr)
+		*results = append(*results, netip.PrefixFrom(ip, depth))
+	}
+
+	if depth >= 48 {
+		return
+	}
+
+	for bit := 0; bit < 2; bit++ {
+		if n.children[bit] != nil {
+			nextAddr := addr
+			byteIdx := depth / 8
+			bitPos := uint(7 - (depth % 8))
+			if bit == 1 {
+				nextAddr[byteIdx] |= 1 << bitPos
+			}
+			collectPrefixesV6(n.children[bit], nextAddr, depth+1, results)
 		}
 	}
 }
