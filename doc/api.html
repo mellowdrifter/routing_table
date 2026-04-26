@@ -1,0 +1,1516 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>routing_table — Go API Reference</title>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,300;0,400;0,500;0,600;0,700;1,400&family=IBM+Plex+Sans:wght@300;400;500;600&display=swap');
+
+        :root {
+            --bg: #0d1117;
+            --surface: #161b22;
+            --surface2: #1c2333;
+            --border: #21262d;
+            --border2: #30363d;
+            --fg: #e6edf3;
+            --fg2: #8b949e;
+            --fg3: #58a6ff;
+            --green: #3fb950;
+            --amber: #d29922;
+            --red: #f85149;
+            --purple: #bc8cff;
+            --cyan: #39d5e5;
+            --accent: #1f6feb;
+            --accent-bg: #1f6feb18;
+            --mono: 'JetBrains Mono', 'Fira Code', monospace;
+            --sans: 'IBM Plex Sans', system-ui, sans-serif;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        html {
+            scroll-behavior: smooth;
+        }
+
+        body {
+            background: var(--bg);
+            color: var(--fg);
+            font-family: var(--sans);
+            font-size: 14px;
+            line-height: 1.6;
+            display: grid;
+            grid-template-columns: 260px 1fr;
+            min-height: 100vh;
+        }
+
+        /* ── Sidebar ── */
+        nav {
+            background: var(--surface);
+            border-right: 1px solid var(--border);
+            position: sticky;
+            top: 0;
+            height: 100vh;
+            overflow-y: auto;
+            padding: 0 0 40px;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .nav-header {
+            padding: 20px 20px 16px;
+            border-bottom: 1px solid var(--border);
+            margin-bottom: 8px;
+        }
+
+        .nav-pkg {
+            font-family: var(--mono);
+            font-size: 13px;
+            font-weight: 600;
+            color: var(--green);
+            letter-spacing: 0.02em;
+        }
+
+        .nav-sub {
+            font-size: 11px;
+            color: var(--fg2);
+            margin-top: 2px;
+        }
+
+        .nav-section-title {
+            font-size: 10px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.1em;
+            color: var(--fg2);
+            padding: 14px 20px 5px;
+        }
+
+        nav a {
+            display: block;
+            padding: 4px 20px 4px 28px;
+            font-family: var(--mono);
+            font-size: 12px;
+            color: var(--fg2);
+            text-decoration: none;
+            transition: color 0.15s, background 0.15s;
+            border-left: 2px solid transparent;
+        }
+
+        nav a:hover {
+            color: var(--fg);
+            background: var(--surface2);
+        }
+
+        nav a.type-link {
+            color: var(--purple);
+        }
+
+        nav a.func-link {
+            color: var(--fg3);
+        }
+
+        nav a.meth-link {
+            color: var(--fg2);
+        }
+
+        nav a:hover {
+            border-left-color: var(--green);
+        }
+
+        /* ── Main content ── */
+        main {
+            max-width: 900px;
+            padding: 48px 56px;
+        }
+
+        /* ── Package header ── */
+        .pkg-header {
+            margin-bottom: 40px;
+            padding-bottom: 32px;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .pkg-badge {
+            display: inline-block;
+            background: var(--accent-bg);
+            border: 1px solid var(--accent);
+            border-radius: 4px;
+            font-family: var(--mono);
+            font-size: 11px;
+            color: var(--fg3);
+            padding: 2px 8px;
+            margin-bottom: 14px;
+            letter-spacing: 0.04em;
+        }
+
+        h1 {
+            font-size: 28px;
+            font-weight: 600;
+            font-family: var(--mono);
+            color: var(--fg);
+            letter-spacing: -0.02em;
+            line-height: 1.2;
+        }
+
+        h1 span {
+            color: var(--green);
+        }
+
+        .pkg-meta {
+            display: flex;
+            gap: 20px;
+            margin-top: 16px;
+            flex-wrap: wrap;
+        }
+
+        .pkg-meta-item {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 12px;
+            color: var(--fg2);
+        }
+
+        .pkg-meta-item strong {
+            color: var(--fg);
+            font-weight: 500;
+        }
+
+        .dot {
+            color: var(--border2);
+        }
+
+        /* ── Section headers ── */
+        h2 {
+            font-size: 20px;
+            font-weight: 600;
+            color: var(--fg);
+            margin: 48px 0 16px;
+            padding-bottom: 8px;
+            border-bottom: 1px solid var(--border);
+            font-family: var(--mono);
+            letter-spacing: -0.01em;
+        }
+
+        h3 {
+            font-size: 14px;
+            font-weight: 500;
+            color: var(--fg2);
+            margin: 28px 0 10px;
+            font-family: var(--mono);
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+            font-size: 11px;
+        }
+
+        /* ── Prose ── */
+        p {
+            color: var(--fg2);
+            margin-bottom: 12px;
+            line-height: 1.7;
+            font-size: 14px;
+        }
+
+        p strong {
+            color: var(--fg);
+            font-weight: 500;
+        }
+
+        /* ── Code ── */
+        code {
+            font-family: var(--mono);
+            font-size: 12.5px;
+            background: var(--surface2);
+            border: 1px solid var(--border2);
+            border-radius: 4px;
+            padding: 1px 5px;
+            color: var(--cyan);
+        }
+
+        pre {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 20px 22px;
+            overflow-x: auto;
+            margin: 14px 0 20px;
+            position: relative;
+        }
+
+        pre code {
+            background: none;
+            border: none;
+            padding: 0;
+            font-size: 13px;
+            color: var(--fg);
+            line-height: 1.7;
+        }
+
+        .pre-label {
+            position: absolute;
+            top: 10px;
+            right: 14px;
+            font-size: 10px;
+            font-family: var(--mono);
+            color: var(--fg2);
+            opacity: 0.6;
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+        }
+
+        /* syntax colours */
+        .kw {
+            color: #ff7b72;
+        }
+
+        .ty {
+            color: var(--purple);
+        }
+
+        .fn {
+            color: var(--fg3);
+        }
+
+        .st {
+            color: #a5d6ff;
+        }
+
+        .cm {
+            color: #8b949e;
+            font-style: italic;
+        }
+
+        .nu {
+            color: #79c0ff;
+        }
+
+        .op {
+            color: #ff7b72;
+        }
+
+        /* ── Feature tags ── */
+        .feature-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 12px;
+            margin: 20px 0;
+        }
+
+        .feature-card {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 14px 16px;
+            display: flex;
+            gap: 10px;
+            align-items: flex-start;
+        }
+
+        .feature-icon {
+            font-size: 16px;
+            line-height: 1.4;
+            flex-shrink: 0;
+        }
+
+        .feature-title {
+            font-size: 12px;
+            font-weight: 600;
+            color: var(--fg);
+            margin-bottom: 3px;
+            font-family: var(--mono);
+        }
+
+        .feature-desc {
+            font-size: 12px;
+            color: var(--fg2);
+            line-height: 1.5;
+        }
+
+        /* ── API entries ── */
+        .api-entry {
+            margin: 28px 0;
+            padding: 20px 22px;
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            border-left: 3px solid var(--border2);
+            transition: border-color 0.2s;
+        }
+
+        .api-entry:target,
+        .api-entry:hover {
+            border-left-color: var(--green);
+        }
+
+        .api-sig {
+            font-family: var(--mono);
+            font-size: 13px;
+            color: var(--fg);
+            line-height: 1.6;
+            margin-bottom: 12px;
+            white-space: pre-wrap;
+        }
+
+        .api-sig .recv {
+            color: var(--fg2);
+        }
+
+        .api-sig .fname {
+            color: var(--fg3);
+            font-weight: 600;
+        }
+
+        .api-sig .param-name {
+            color: var(--amber);
+        }
+
+        .api-sig .param-type {
+            color: var(--purple);
+        }
+
+        .api-sig .ret-type {
+            color: var(--green);
+        }
+
+        .api-doc {
+            font-size: 13.5px;
+            color: var(--fg2);
+            line-height: 1.7;
+            margin-bottom: 10px;
+        }
+
+        .api-doc code {
+            font-size: 12px;
+        }
+
+        .api-note {
+            display: inline-flex;
+            align-items: center;
+            gap: 5px;
+            background: var(--surface2);
+            border: 1px solid var(--border2);
+            border-radius: 4px;
+            padding: 3px 9px;
+            font-size: 11px;
+            font-family: var(--mono);
+            margin-top: 6px;
+            margin-right: 6px;
+        }
+
+        .note-safe {
+            color: var(--green);
+            border-color: var(--green);
+            background: #3fb95014;
+        }
+
+        .note-lock {
+            color: var(--amber);
+            border-color: var(--amber);
+            background: #d2992214;
+        }
+
+        .note-batch {
+            color: var(--cyan);
+            border-color: var(--cyan);
+            background: #39d5e514;
+        }
+
+        .note-lpm {
+            color: var(--purple);
+            border-color: var(--purple);
+            background: #bc8cff14;
+        }
+
+        .note-exact {
+            color: var(--fg3);
+            border-color: var(--fg3);
+            background: #58a6ff14;
+        }
+
+        /* ── Types section ── */
+        .type-entry {
+            margin: 24px 0;
+            padding: 20px 22px;
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            border-left: 3px solid var(--purple);
+        }
+
+        .type-name {
+            font-family: var(--mono);
+            font-size: 14px;
+            font-weight: 600;
+            color: var(--purple);
+            margin-bottom: 8px;
+        }
+
+        .type-doc {
+            font-size: 13.5px;
+            color: var(--fg2);
+            line-height: 1.7;
+            margin-bottom: 12px;
+        }
+
+        /* ── Memory table ── */
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 16px 0;
+            font-size: 13px;
+            font-family: var(--mono);
+        }
+
+        th {
+            background: var(--surface2);
+            border: 1px solid var(--border2);
+            padding: 8px 12px;
+            text-align: left;
+            font-size: 11px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.07em;
+            color: var(--fg2);
+        }
+
+        td {
+            border: 1px solid var(--border);
+            padding: 8px 12px;
+            color: var(--fg2);
+            vertical-align: top;
+        }
+
+        td:first-child {
+            color: var(--fg);
+        }
+
+        tr:hover td {
+            background: var(--surface2);
+        }
+
+        /* ── Memory diagram ── */
+        .mem-diagram {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 24px;
+            margin: 20px 0;
+            font-family: var(--mono);
+            font-size: 12px;
+        }
+
+        .mem-layer {
+            margin: 0 0 16px;
+        }
+
+        .mem-layer-title {
+            font-size: 10px;
+            text-transform: uppercase;
+            letter-spacing: 0.1em;
+            font-weight: 600;
+            margin-bottom: 8px;
+            padding: 3px 8px;
+            border-radius: 3px;
+            display: inline-block;
+        }
+
+        .layer-1 {
+            background: #1f6feb22;
+            color: var(--fg3);
+            border: 1px solid var(--fg3);
+        }
+
+        .layer-2 {
+            background: #3fb95022;
+            color: var(--green);
+            border: 1px solid var(--green);
+        }
+
+        .layer-3 {
+            background: #bc8cff22;
+            color: var(--purple);
+            border: 1px solid var(--purple);
+        }
+
+        .layer-4 {
+            background: #d2992222;
+            color: var(--amber);
+            border: 1px solid var(--amber);
+        }
+
+        .mem-boxes {
+            display: flex;
+            gap: 6px;
+            flex-wrap: wrap;
+        }
+
+        .mem-box {
+            border: 1px solid var(--border2);
+            border-radius: 4px;
+            padding: 6px 10px;
+            font-size: 11px;
+            background: var(--surface2);
+        }
+
+        .mem-box.active {
+            border-color: var(--fg3);
+            color: var(--fg);
+        }
+
+        .mem-box.node-box {
+            border-color: var(--green);
+            color: var(--green);
+        }
+
+        .mem-box.attr-box {
+            border-color: var(--amber);
+            color: var(--amber);
+        }
+
+        .mem-arrow {
+            text-align: center;
+            color: var(--fg2);
+            font-size: 16px;
+            margin: 4px 0;
+        }
+
+        /* ── Limits box ── */
+        .limits-box {
+            background: var(--surface2);
+            border: 1px solid var(--border2);
+            border-radius: 6px;
+            padding: 14px 18px;
+            margin: 14px 0;
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 10px;
+            font-family: var(--mono);
+            font-size: 12px;
+        }
+
+        .limit-item {
+            color: var(--fg2);
+        }
+
+        .limit-item strong {
+            color: var(--amber);
+        }
+
+        /* ── Section groups ── */
+        .api-group {
+            margin-bottom: 8px;
+        }
+
+        .api-group-title {
+            font-size: 11px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.1em;
+            color: var(--fg3);
+            margin: 32px 0 14px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .api-group-title::after {
+            content: '';
+            flex: 1;
+            height: 1px;
+            background: var(--border);
+        }
+
+        /* ── Install section ── */
+        .install-block {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 14px 18px;
+            margin: 16px 0;
+        }
+
+        .install-block pre {
+            background: none;
+            border: none;
+            padding: 0;
+            margin: 0;
+            flex: 1;
+        }
+
+        .install-block pre code {
+            color: var(--green);
+        }
+
+        .install-prompt {
+            color: var(--fg2);
+            font-family: var(--mono);
+            font-size: 13px;
+            flex-shrink: 0;
+        }
+
+        /* ── Constraints ── */
+        .constraint-list {
+            list-style: none;
+            margin: 10px 0;
+        }
+
+        .constraint-list li {
+            font-family: var(--mono);
+            font-size: 12.5px;
+            color: var(--fg2);
+            padding: 4px 0 4px 14px;
+            position: relative;
+        }
+
+        .constraint-list li::before {
+            content: '→';
+            position: absolute;
+            left: 0;
+            color: var(--amber);
+        }
+
+        /* scrollbar */
+        ::-webkit-scrollbar {
+            width: 6px;
+            height: 6px;
+        }
+
+        ::-webkit-scrollbar-track {
+            background: var(--bg);
+        }
+
+        ::-webkit-scrollbar-thumb {
+            background: var(--border2);
+            border-radius: 3px;
+        }
+
+        /* anchor targets */
+        [id] {
+            scroll-margin-top: 24px;
+        }
+
+        hr.divider {
+            border: none;
+            border-top: 1px solid var(--border);
+            margin: 40px 0;
+        }
+    </style>
+</head>
+
+<body>
+
+    <!-- ═══════════════════════════════════════ SIDEBAR ════════════════════════════════════════ -->
+    <nav>
+        <div class="nav-header">
+            <div class="nav-pkg">routing_table</div>
+            <div class="nav-sub">github.com/mellowdrifter/routing_table</div>
+        </div>
+
+        <div class="nav-section-title">Overview</div>
+        <a href="#overview">Package overview</a>
+        <a href="#install">Installation</a>
+        <a href="#quickstart">Quick start</a>
+        <a href="#memory">Memory architecture</a>
+        <a href="#constraints">Constraints</a>
+
+        <div class="nav-section-title">Types</div>
+        <a href="#type-Rib" class="type-link">Rib</a>
+        <a href="#type-Route" class="type-link">Route</a>
+        <a href="#type-RouteAttributes" class="type-link">RouteAttributes</a>
+        <a href="#type-LargeCommunity" class="type-link">LargeCommunity</a>
+        <a href="#type-PrefixWithID" class="type-link">PrefixWithID</a>
+
+        <div class="nav-section-title">Constructor</div>
+        <a href="#fn-GetNewRib" class="func-link">GetNewRib</a>
+        <a href="#fn-SelectBest" class="func-link">SelectBest</a>
+
+        <div class="nav-section-title">Rib — Lifecycle</div>
+        <a href="#fn-Reset" class="meth-link">Reset</a>
+        <a href="#fn-PrintRib" class="meth-link">PrintRib</a>
+
+        <div class="nav-section-title">Rib — Counters</div>
+        <a href="#fn-V4Count" class="meth-link">V4Count</a>
+        <a href="#fn-V6Count" class="meth-link">V6Count</a>
+        <a href="#fn-V4PathCount" class="meth-link">V4PathCount</a>
+        <a href="#fn-V6PathCount" class="meth-link">V6PathCount</a>
+        <a href="#fn-GetSubnets" class="meth-link">GetSubnets</a>
+
+        <div class="nav-section-title">Rib — Insert</div>
+        <a href="#fn-InsertIPv4" class="meth-link">InsertIPv4</a>
+        <a href="#fn-InsertIPv4Batch" class="meth-link">InsertIPv4Batch</a>
+        <a href="#fn-InsertIPv6" class="meth-link">InsertIPv6</a>
+        <a href="#fn-InsertIPv6Batch" class="meth-link">InsertIPv6Batch</a>
+
+        <div class="nav-section-title">Rib — Delete</div>
+        <a href="#fn-DeleteIPv4" class="meth-link">DeleteIPv4</a>
+        <a href="#fn-DeleteIPv4Batch" class="meth-link">DeleteIPv4Batch</a>
+        <a href="#fn-DeleteIPv6" class="meth-link">DeleteIPv6</a>
+        <a href="#fn-DeleteIPv6Batch" class="meth-link">DeleteIPv6Batch</a>
+
+        <div class="nav-section-title">Rib — Search (LPM)</div>
+        <a href="#fn-SearchIPv4" class="meth-link">SearchIPv4</a>
+        <a href="#fn-AllPathsSearchIPv4" class="meth-link">AllPathsSearchIPv4</a>
+        <a href="#fn-SearchIPv6" class="meth-link">SearchIPv6</a>
+        <a href="#fn-AllPathsSearchIPv6" class="meth-link">AllPathsSearchIPv6</a>
+
+        <div class="nav-section-title">Rib — Lookup (Exact)</div>
+        <a href="#fn-LookupIPv4" class="meth-link">LookupIPv4</a>
+        <a href="#fn-LookupIPv6" class="meth-link">LookupIPv6</a>
+    </nav>
+
+    <!-- ═══════════════════════════════════════ MAIN ════════════════════════════════════════ -->
+    <main>
+
+        <!-- HEADER -->
+        <div class="pkg-header">
+            <div class="pkg-badge">package routing_table</div>
+            <h1><span>routing_table</span></h1>
+            <div class="pkg-meta">
+                <span class="pkg-meta-item"><strong>Go</strong> 1.21+</span>
+                <span class="dot">·</span>
+                <span class="pkg-meta-item"><strong>License</strong> MIT</span>
+                <span class="dot">·</span>
+                <span class="pkg-meta-item"><strong>Source</strong> github.com/mellowdrifter/routing_table</span>
+            </div>
+        </div>
+
+        <!-- OVERVIEW -->
+        <section id="overview">
+            <h2>Overview</h2>
+            <p>
+                Package <code>routing_table</code> provides a highly optimised, concurrent, in-memory BGP Routing
+                Information Base (RIB) for both IPv4 and IPv6. It is designed to ingest and query a full Internet
+                routing table (&gt;900k IPv4 prefixes, &gt;200k IPv6 prefixes) with minimal memory overhead and
+                maximum lookup throughput.
+            </p>
+
+            <div class="feature-grid">
+                <div class="feature-card">
+                    <div class="feature-icon">⚡</div>
+                    <div>
+                        <div class="feature-title">O(1) Root Dispatch</div>
+                        <div class="feature-desc">The first 8 bits are resolved with a direct array index, skipping all
+                            trie traversal for the outermost octet.</div>
+                    </div>
+                </div>
+                <div class="feature-card">
+                    <div class="feature-icon">🔀</div>
+                    <div>
+                        <div class="feature-title">Add-Path Native</div>
+                        <div class="feature-desc">Every trie node stores a <code>map[uint32]*RouteAttributes</code>,
+                            keyed by BGP Path ID. Multiple paths per prefix at no extra structural cost.</div>
+                    </div>
+                </div>
+                <div class="feature-card">
+                    <div class="feature-icon">🗜</div>
+                    <div>
+                        <div class="feature-title">Attribute Deduplication</div>
+                        <div class="feature-desc">AS Paths, Communities, and Large Communities are globally interned in
+                            a ref-counted hash table. Up to 50% memory reduction vs naïve storage.</div>
+                    </div>
+                </div>
+                <div class="feature-card">
+                    <div class="feature-icon">🔒</div>
+                    <div>
+                        <div class="feature-title">Split-Lock Concurrency</div>
+                        <div class="feature-desc">Separate <code>sync.RWMutex</code> per address family. IPv4 writes
+                            never block IPv6 reads and vice versa.</div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- INSTALL -->
+        <section id="install">
+            <h2>Installation</h2>
+            <div class="install-block">
+                <span class="install-prompt">$</span>
+                <pre><code>go get github.com/mellowdrifter/routing_table</code></pre>
+            </div>
+            <p>The only stdlib dependency is <code>net/netip</code> (Go 1.18+). No third-party packages required.</p>
+        </section>
+
+        <!-- QUICK START -->
+        <section id="quickstart">
+            <h2>Quick start</h2>
+            <pre><span class="pre-label">go</span><code><span class="kw">import</span> (
+    <span class="st">"net/netip"</span>
+    rt <span class="st">"github.com/mellowdrifter/routing_table"</span>
+)
+
+<span class="kw">func</span> <span class="fn">main</span>() {
+    rib <span class="op">:=</span> rt.<span class="fn">GetNewRib</span>()
+
+    <span class="cm">// Build a Route with attributes</span>
+    route <span class="op">:=</span> rt.<span class="ty">Route</span>{
+        Prefix: netip.<span class="fn">MustParsePrefix</span>(<span class="st">"8.8.8.0/24"</span>),
+        Attributes: <span class="op">&amp;</span>rt.<span class="ty">RouteAttributes</span>{
+            AsPath:    []<span class="ty">uint32</span>{<span class="nu">15169</span>, <span class="nu">3356</span>},
+            LocalPref: <span class="nu">100</span>,
+            Communities: []<span class="ty">uint32</span>{<span class="nu">3356</span><span class="op">&lt;&lt;</span><span class="nu">16</span> <span class="op">|</span> <span class="nu">22</span>},
+        },
+        PathID: <span class="nu">0</span>, <span class="cm">// 0 = non-Add-Path session</span>
+    }
+
+    rib.<span class="fn">InsertIPv4</span>(route)
+
+    <span class="cm">// Longest-prefix match</span>
+    result <span class="op">:=</span> rib.<span class="fn">SearchIPv4</span>(netip.<span class="fn">MustParseAddr</span>(<span class="st">"8.8.8.8"</span>))
+    <span class="kw">if</span> result <span class="op">!=</span> <span class="kw">nil</span> {
+        fmt.<span class="fn">Println</span>(result.Prefix)              <span class="cm">// 8.8.8.0/24</span>
+        fmt.<span class="fn">Println</span>(result.Attributes.AsPath)    <span class="cm">// [15169 3356]</span>
+        fmt.<span class="fn">Println</span>(result.Attributes.LocalPref)  <span class="cm">// 100</span>
+    }
+}</code></pre>
+
+            <h3>Add-Path session example</h3>
+            <pre><span class="pre-label">go</span><code><span class="cm">// Multiple paths for the same prefix (BGP Add-Path)</span>
+rib.<span class="fn">InsertIPv4Batch</span>([]rt.<span class="ty">Route</span>{
+    {Prefix: netip.<span class="fn">MustParsePrefix</span>(<span class="st">"1.1.1.0/24"</span>), PathID: <span class="nu">101</span>,
+     Attributes: <span class="op">&amp;</span>rt.<span class="ty">RouteAttributes</span>{AsPath: []<span class="ty">uint32</span>{<span class="nu">13335</span>, <span class="nu">3356</span>}, LocalPref: <span class="nu">200</span>}},
+    {Prefix: netip.<span class="fn">MustParsePrefix</span>(<span class="st">"1.1.1.0/24"</span>), PathID: <span class="nu">102</span>,
+     Attributes: <span class="op">&amp;</span>rt.<span class="ty">RouteAttributes</span>{AsPath: []<span class="ty">uint32</span>{<span class="nu">13335</span>, <span class="nu">174</span>},  LocalPref: <span class="nu">100</span>}},
+})
+
+<span class="cm">// Retrieve best path (highest LocalPref wins)</span>
+best <span class="op">:=</span> rib.<span class="fn">SearchIPv4</span>(netip.<span class="fn">MustParseAddr</span>(<span class="st">"1.1.1.1"</span>))
+
+<span class="cm">// Retrieve ALL paths for further policy decision</span>
+allPaths <span class="op">:=</span> rib.<span class="fn">AllPathsSearchIPv4</span>(netip.<span class="fn">MustParseAddr</span>(<span class="st">"1.1.1.1"</span>))
+winner <span class="op">:=</span> rt.<span class="fn">SelectBest</span>(allPaths)
+
+<span class="cm">// Delete one specific path</span>
+rib.<span class="fn">DeleteIPv4</span>(netip.<span class="fn">MustParsePrefix</span>(<span class="st">"1.1.1.0/24"</span>), <span class="nu">101</span>)</code></pre>
+
+            <h3>Full table reset (e.g. on peer reset)</h3>
+            <pre><span class="pre-label">go</span><code><span class="cm">// Atomically drop the entire table and release all memory to GC.</span>
+<span class="cm">// Faster than deleting prefixes individually.</span>
+rib.<span class="fn">Reset</span>()</code></pre>
+        </section>
+
+        <!-- MEMORY ARCHITECTURE -->
+        <section id="memory">
+            <h2>Memory Architecture</h2>
+            <p>
+                Understanding the two-layer storage model is key to reasoning about memory usage in a long-running
+                daemon.
+            </p>
+
+            <div class="mem-diagram">
+                <div class="mem-layer">
+                    <div class="mem-layer-title layer-1">Layer 1 — Root Arrays (O(1) dispatch)</div>
+                    <div class="mem-boxes">
+                        <div class="mem-box">ipv4Root [256]*node<br><small style="color:var(--fg2)">indexed by
+                                addr[0]</small></div>
+                        <div class="mem-box">ipv6Root [32]*node<br><small style="color:var(--fg2)">indexed by
+                                addr[0]-0x20</small></div>
+                    </div>
+                </div>
+                <div class="mem-arrow">↓</div>
+                <div class="mem-layer">
+                    <div class="mem-layer-title layer-2">Layer 2 — Binary Trie (bits 9 → max)</div>
+                    <div class="mem-boxes">
+                        <div class="mem-box node-box">node { children[2]*node, paths map[uint32]*Attrs, parent *node }
+                        </div>
+                    </div>
+                </div>
+                <div class="mem-arrow">↓</div>
+                <div class="mem-layer">
+                    <div class="mem-layer-title layer-3">Layer 3 — Path Map (per prefix node)</div>
+                    <div class="mem-boxes">
+                        <div class="mem-box">PathID 0 → *RouteAttributes</div>
+                        <div class="mem-box">PathID 101 → *RouteAttributes</div>
+                        <div class="mem-box">PathID 102 → *RouteAttributes</div>
+                    </div>
+                </div>
+                <div class="mem-arrow">↓ (pointer, not copy)</div>
+                <div class="mem-layer">
+                    <div class="mem-layer-title layer-4">Layer 4 — Dedup Attribute Table (global, ref-counted)</div>
+                    <div class="mem-boxes">
+                        <div class="mem-box attr-box">attrTable map[uint64][]*RouteAttributes</div>
+                        <div class="mem-box">RefCount: N (shared by N paths with identical attrs)</div>
+                    </div>
+                </div>
+            </div>
+
+            <h3>Per-struct memory cost</h3>
+            <table>
+                <tr>
+                    <th>Structure</th>
+                    <th>Fixed bytes</th>
+                    <th>Variable component</th>
+                    <th>Notes</th>
+                </tr>
+                <tr>
+                    <td>node</td>
+                    <td>~64 B</td>
+                    <td>paths map overhead</td>
+                    <td>2×pointer (children) + pointer (parent) + map header</td>
+                </tr>
+                <tr>
+                    <td>RouteAttributes</td>
+                    <td>~40 B</td>
+                    <td>4 B × len(AsPath) + 4 B × len(Communities) + 12 B × len(LargeCommunities)</td>
+                    <td>Stored once per unique attribute set regardless of how many paths reference it</td>
+                </tr>
+                <tr>
+                    <td>ipv4Root array</td>
+                    <td>2,048 B</td>
+                    <td>—</td>
+                    <td>256 × 8-byte pointer; always allocated</td>
+                </tr>
+                <tr>
+                    <td>ipv6Root array</td>
+                    <td>256 B</td>
+                    <td>—</td>
+                    <td>32 × 8-byte pointer; always allocated</td>
+                </tr>
+                <tr>
+                    <td>attrTable map entry</td>
+                    <td>8 B key + ~24 B bucket</td>
+                    <td>per-bucket slice</td>
+                    <td>FNV-1a 64-bit key; collision chains are slices of pointers</td>
+                </tr>
+            </table>
+
+            <h3>Real-world estimate (full Internet table, no Add-Path)</h3>
+            <table>
+                <tr>
+                    <th>Address family</th>
+                    <th>Prefix count (approx)</th>
+                    <th>Node count (approx)</th>
+                    <th>Heap footprint (approx)</th>
+                </tr>
+                <tr>
+                    <td>IPv4</td>
+                    <td>950,000</td>
+                    <td>1.2 – 1.5 M</td>
+                    <td>~160 – 200 MB</td>
+                </tr>
+                <tr>
+                    <td>IPv6</td>
+                    <td>220,000</td>
+                    <td>300 – 450 K</td>
+                    <td>~40 – 60 MB</td>
+                </tr>
+                <tr>
+                    <td>Attribute table</td>
+                    <td colspan="2">~80–120k unique attribute sets</td>
+                    <td>~20 – 35 MB</td>
+                </tr>
+            </table>
+
+            <p>
+                With attribute deduplication the attrTable typically holds 1 entry per unique
+                AS-path + community combination, not one per route. For a full Internet table where many thousands
+                of routes share the same AS path (e.g., transit paths via AS 3356), the savings compound
+                significantly — commonly 40–50% less heap vs storing attributes inline.
+            </p>
+
+            <h3>attrTable internals</h3>
+            <p>
+                Attributes are hashed with <strong>FNV-1a 64-bit</strong> over all fields (AS path, communities,
+                large communities, LocalPref). On insert, the library deep-copies the caller's struct exactly once
+                and stores a pointer shared by all referencing paths. <code>refCount</code> is decremented on
+                <code>DeleteIPv4</code>/<code>DeleteIPv6</code>; when it reaches zero the entry is evicted and its
+                slice memory reclaimed. The table is protected by its own <code>sync.Mutex</code>, independent of
+                the per-family RIB mutexes.
+            </p>
+
+            <h3>GC pressure</h3>
+            <p>
+                <code>Reset()</code> re-assigns the root arrays in a single locked step, severing all trie nodes
+                and attribute table entries from GC roots simultaneously. The GC then reclaims the entire abandoned
+                graph asynchronously. This is substantially faster than batch-deleting all routes and avoids the
+                per-deletion attrTable lock contention. Calling <code>runtime.GC()</code> immediately after
+                <code>Reset()</code> is a valid strategy for BGP peer resets when you need memory returned to the
+                OS promptly.
+            </p>
+        </section>
+
+        <!-- CONSTRAINTS -->
+        <section id="constraints">
+            <h2>Constraints</h2>
+            <p>These are hard limits enforced at insertion time. Out-of-range prefixes are silently rejected with a log
+                message.</p>
+            <ul class="constraint-list">
+                <li>IPv4 prefix length: /8 minimum, /24 maximum</li>
+                <li>IPv6 prefix length: /8 minimum, /48 maximum</li>
+                <li>IPv6 address space: 2000::/3 only (first byte 0x20–0x3F; global unicast)</li>
+                <li>PathID 0 is the conventional value for non-Add-Path sessions</li>
+                <li>A nil Attributes pointer is treated as an empty RouteAttributes{} (zero values for all fields)</li>
+            </ul>
+        </section>
+
+        <hr class="divider">
+
+        <!-- TYPES -->
+        <section id="types">
+            <h2>Types</h2>
+
+            <div class="type-entry" id="type-Rib">
+                <div class="type-name">type Rib struct { … }</div>
+                <div class="type-doc">
+                    Rib is the primary data structure: a concurrent, memory-efficient Routing Information Base
+                    holding both IPv4 and IPv6 prefixes in separate binary tries.
+                    The IPv4 trie uses a <code>[256]*node</code> root array indexed by the first octet; the IPv6
+                    trie uses a <code>[32]*node</code> root array indexed by <code>firstByte - 0x20</code>, covering
+                    all of 2000::/3. Both tries are protected by separate <code>sync.RWMutex</code> instances.
+                    Internal fields are not exported; interact via methods only.
+                </div>
+                <pre><code><span class="cm">// All exported fields are accessed via methods. Internal layout:</span>
+<span class="kw">type</span> <span class="ty">Rib</span> <span class="kw">struct</span> {
+    v4mu       *sync.RWMutex
+    v6mu       *sync.RWMutex
+    ipv4Root   [<span class="nu">256</span>]*node              <span class="cm">// O(1) first-octet dispatch</span>
+    ipv6Root   [<span class="nu">32</span>]*node               <span class="cm">// O(1) first-byte dispatch (2000::/3)</span>
+    attrTable  *attrTable              <span class="cm">// global dedup table</span>
+    v4Count    <span class="ty">int</span>
+    v6Count    <span class="ty">int</span>
+    v4NodeCount <span class="ty">uint64</span>
+    v6NodeCount <span class="ty">uint64</span>
+    v4masks    map[<span class="ty">int</span>]<span class="ty">int</span>
+    v6masks    map[<span class="ty">int</span>]<span class="ty">int</span>
+}</code></pre>
+            </div>
+
+            <div class="type-entry" id="type-Route">
+                <div class="type-name">type Route struct</div>
+                <div class="type-doc">
+                    Route is a single entry in the RIB. It carries the prefix, all associated BGP attributes,
+                    and the Add-Path path identifier. PathID should be <code>0</code> for non-Add-Path sessions.
+                </div>
+                <pre><code><span class="kw">type</span> <span class="ty">Route</span> <span class="kw">struct</span> {
+    Prefix     netip.Prefix
+    Attributes *<span class="ty">RouteAttributes</span>
+    PathID     <span class="ty">uint32</span>  <span class="cm">// 0 for non-add-path</span>
+}</code></pre>
+                <p><code>Route</code> also implements <code>fmt.Stringer</code> — <code>String()</code> returns
+                    <code>Prefix.String()</code> or <code>"&lt;nil&gt;"</code>.</p>
+            </div>
+
+            <div class="type-entry" id="type-RouteAttributes">
+                <div class="type-name">type RouteAttributes struct</div>
+                <div class="type-doc">
+                    RouteAttributes holds the BGP path attributes associated with a route. The struct you pass
+                    to Insert methods is deep-copied once into the deduplicated attribute table; you can discard
+                    or reuse your own copy immediately after the call.
+                    <br><br>
+                    The <code>hash</code> and <code>refCount</code> fields are managed internally and must not be set by
+                    callers.
+                </div>
+                <pre><code><span class="kw">type</span> <span class="ty">RouteAttributes</span> <span class="kw">struct</span> {
+    AsPath           []<span class="ty">uint32</span>           <span class="cm">// ordered list of ASNs</span>
+    Communities      []<span class="ty">uint32</span>           <span class="cm">// encoded as (ASN << 16 | value)</span>
+    LargeCommunities []<span class="ty">LargeCommunity</span>   <span class="cm">// RFC 8092</span>
+    LocalPref        <span class="ty">uint32</span>
+
+    <span class="cm">// internal — do not set</span>
+    hash     <span class="ty">uint64</span>
+    refCount <span class="ty">uint32</span>
+}</code></pre>
+            </div>
+
+            <div class="type-entry" id="type-LargeCommunity">
+                <div class="type-name">type LargeCommunity struct</div>
+                <div class="type-doc">LargeCommunity represents a BGP Large Community as defined in RFC 8092. Each
+                    component is an independent 32-bit value.</div>
+                <pre><code><span class="kw">type</span> <span class="ty">LargeCommunity</span> <span class="kw">struct</span> {
+    GlobalAdmin <span class="ty">uint32</span>
+    LocalData1  <span class="ty">uint32</span>
+    LocalData2  <span class="ty">uint32</span>
+}</code></pre>
+            </div>
+
+            <div class="type-entry" id="type-PrefixWithID">
+                <div class="type-name">type PrefixWithID struct</div>
+                <div class="type-doc">PrefixWithID pairs a prefix with its Add-Path PathID for batch deletion
+                    operations.</div>
+                <pre><code><span class="kw">type</span> <span class="ty">PrefixWithID</span> <span class="kw">struct</span> {
+    Prefix netip.Prefix
+    PathID <span class="ty">uint32</span>
+}</code></pre>
+            </div>
+        </section>
+
+        <hr class="divider">
+
+        <!-- FUNCTIONS -->
+        <section id="functions">
+            <h2>Functions &amp; Methods</h2>
+
+            <!-- Constructors -->
+            <div class="api-group-title">Constructors</div>
+
+            <div class="api-entry" id="fn-GetNewRib">
+                <div class="api-sig"><span class="kw">func</span> <span class="fname">GetNewRib</span>() <span
+                        class="ret-type">Rib</span></div>
+                <div class="api-doc">
+                    GetNewRib creates and returns a new, empty RIB. The root arrays are zero-initialised (all nil
+                    pointers);
+                    trie nodes are allocated on demand during the first insert into each prefix slot. Also initialises
+                    the
+                    global attribute deduplication table.
+                </div>
+                <pre><code>rib <span class="op">:=</span> rt.<span class="fn">GetNewRib</span>()</code></pre>
+                <span class="api-note note-safe">✓ thread-safe after construction</span>
+            </div>
+
+            <div class="api-entry" id="fn-SelectBest">
+                <div class="api-sig"><span class="kw">func</span> <span class="fname">SelectBest</span>(<span
+                        class="param-name">routes</span> <span class="param-type">[]Route</span>) <span
+                        class="ret-type">*Route</span></div>
+                <div class="api-doc">
+                    SelectBest applies a deterministic BGP best-path selection algorithm to a caller-supplied slice of
+                    routes, typically the result of <code>AllPathsSearchIPv4</code> or <code>AllPathsSearchIPv6</code>.
+                    Selection criteria in priority order:
+                </div>
+                <ul class="constraint-list" style="margin-left:0;margin-bottom:12px;">
+                    <li>Highest <code>LocalPref</code></li>
+                    <li>Shortest <code>AsPath</code> length</li>
+                    <li>Lowest <code>PathID</code> as final tiebreaker</li>
+                </ul>
+                <div class="api-doc">Returns <code>nil</code> if the slice is empty.</div>
+                <pre><code>paths <span class="op">:=</span> rib.<span class="fn">AllPathsSearchIPv4</span>(netip.<span class="fn">MustParseAddr</span>(<span class="st">"8.8.8.8"</span>))
+best  <span class="op">:=</span> rt.<span class="fn">SelectBest</span>(paths)</code></pre>
+                <span class="api-note">no locks acquired</span>
+            </div>
+
+            <!-- Lifecycle -->
+            <div class="api-group-title">Rib — Lifecycle</div>
+
+            <div class="api-entry" id="fn-Reset">
+                <div class="api-sig"><span class="recv">func (r *Rib)</span> <span class="fname">Reset</span>()</div>
+                <div class="api-doc">
+                    Reset atomically flushes the entire RIB. Both address-family write locks are acquired
+                    simultaneously,
+                    the root arrays are replaced with empty arrays, all counters zeroed, and a fresh attribute table
+                    installed. The abandoned trie nodes and attribute structs become GC-eligible immediately after the
+                    locks are released.
+                    <br><br>
+                    This is the canonical way to handle a BGP peer reset. For memory-sensitive daemons, following
+                    <code>Reset()</code> with an explicit <code>runtime.GC(); debug.FreeOSMemory()</code> will return
+                    heap pages to the OS promptly.
+                </div>
+                <span class="api-note note-lock">⚑ acquires v4+v6 write locks</span>
+            </div>
+
+            <div class="api-entry" id="fn-PrintRib">
+                <div class="api-sig"><span class="recv">func (r *Rib)</span> <span class="fname">PrintRib</span>()</div>
+                <div class="api-doc">
+                    PrintRib prints a short human-readable summary to stdout: IPv4 and IPv6 prefix counts, and the mask
+                    distribution maps. Acquires read locks on both families. Intended for debugging; not suitable for
+                    programmatic consumption — use <code>V4Count</code>, <code>V6Count</code>, and
+                    <code>GetSubnets</code> instead.
+                </div>
+                <span class="api-note note-safe">read-locked</span>
+            </div>
+
+            <!-- Counters -->
+            <div class="api-group-title">Rib — Counters &amp; Stats</div>
+
+            <div class="api-entry" id="fn-V4Count">
+                <div class="api-sig"><span class="recv">func (r *Rib)</span> <span class="fname">V4Count</span>() <span
+                        class="ret-type">int</span></div>
+                <div class="api-doc">
+                    V4Count returns the total number of distinct IPv4 <em>prefixes</em> currently in the RIB (regardless
+                    of how many paths each prefix has). Returns 0 if the RIB has not been initialised via
+                    <code>GetNewRib</code>.
+                </div>
+                <span class="api-note note-safe">read-locked</span>
+            </div>
+
+            <div class="api-entry" id="fn-V6Count">
+                <div class="api-sig"><span class="recv">func (r *Rib)</span> <span class="fname">V6Count</span>() <span
+                        class="ret-type">int</span></div>
+                <div class="api-doc">V6Count returns the total number of distinct IPv6 prefixes in the RIB.</div>
+                <span class="api-note note-safe">read-locked</span>
+            </div>
+
+            <div class="api-entry" id="fn-V4PathCount">
+                <div class="api-sig"><span class="recv">func (r *Rib)</span> <span class="fname">V4PathCount</span>()
+                    <span class="ret-type">int</span></div>
+                <div class="api-doc">
+                    V4PathCount returns the total number of individual IPv4 <em>paths</em> across all prefixes.
+                    For a non-Add-Path session this equals <code>V4Count()</code>. For Add-Path sessions it is ≥
+                    <code>V4Count()</code>. Performs a full trie walk under read lock — do not call in hot paths.
+                </div>
+                <span class="api-note note-safe">read-locked</span>
+                <span class="api-note">O(nodes) — avoid in hot path</span>
+            </div>
+
+            <div class="api-entry" id="fn-V6PathCount">
+                <div class="api-sig"><span class="recv">func (r *Rib)</span> <span class="fname">V6PathCount</span>()
+                    <span class="ret-type">int</span></div>
+                <div class="api-doc">V6PathCount is the IPv6 equivalent of V4PathCount. Performs a full trie walk.</div>
+                <span class="api-note note-safe">read-locked</span>
+                <span class="api-note">O(nodes) — avoid in hot path</span>
+            </div>
+
+            <div class="api-entry" id="fn-GetSubnets">
+                <div class="api-sig"><span class="recv">func (r *Rib)</span> <span class="fname">GetSubnets</span>()
+                    <span class="ret-type">(map[int]int, map[int]int)</span></div>
+                <div class="api-doc">
+                    GetSubnets returns copies of the prefix-length distribution histograms for IPv4 and IPv6
+                    respectively.
+                    Each map key is a prefix length (e.g. 24), value is the count of prefixes at that length.
+                    Returns <code>nil, nil</code> if the RIB was not properly initialised.
+                </div>
+                <pre><code>v4masks, v6masks <span class="op">:=</span> rib.<span class="fn">GetSubnets</span>()
+fmt.<span class="fn">Printf</span>(<span class="st">"/24 count: %d\n"</span>, v4masks[<span class="nu">24</span>])</code></pre>
+                <span class="api-note note-safe">read-locked (both families)</span>
+            </div>
+
+            <!-- Insert -->
+            <div class="api-group-title">Rib — Insert</div>
+
+            <div class="api-entry" id="fn-InsertIPv4">
+                <div class="api-sig"><span class="recv">func (r *Rib)</span> <span class="fname">InsertIPv4</span>(<span
+                        class="param-name">route</span> <span class="param-type">Route</span>)</div>
+                <div class="api-doc">
+                    InsertIPv4 adds a single IPv4 route. If a route with the same prefix and PathID already exists its
+                    attributes are replaced (old attributes are ref-count decremented in the attrTable). Silently
+                    rejects
+                    prefixes outside /8–/24. Ignores routes whose address is IPv6-mapped.
+                </div>
+                <span class="api-note note-lock">⚑ v4 write lock</span>
+                <span class="api-note">mask /8–/24 only</span>
+            </div>
+
+            <div class="api-entry" id="fn-InsertIPv4Batch">
+                <div class="api-sig"><span class="recv">func (r *Rib)</span> <span
+                        class="fname">InsertIPv4Batch</span>(<span class="param-name">routes</span> <span
+                        class="param-type">[]Route</span>) <span class="ret-type">[]netip.Prefix</span></div>
+                <div class="api-doc">
+                    InsertIPv4Batch inserts multiple IPv4 routes under a single write lock acquisition, avoiding
+                    per-route lock overhead. Returns a slice of prefixes that were <em>newly added</em> to the trie
+                    (i.e., went from 0 paths to 1 path). Useful for tracking which prefixes to announce downstream.
+                    <br><br>
+                    Prefer this over repeated <code>InsertIPv4</code> calls when processing BGP UPDATE messages with
+                    multiple NLRIs.
+                </div>
+                <pre><code>newPfxs <span class="op">:=</span> rib.<span class="fn">InsertIPv4Batch</span>(routes)
+<span class="kw">for</span> _, p <span class="op">:=</span> <span class="kw">range</span> newPfxs {
+    <span class="fn">announce</span>(p)  <span class="cm">// only newly visible prefixes</span>
+}</code></pre>
+                <span class="api-note note-lock">⚑ v4 write lock (once)</span>
+                <span class="api-note note-batch">✦ batch preferred</span>
+            </div>
+
+            <div class="api-entry" id="fn-InsertIPv6">
+                <div class="api-sig"><span class="recv">func (r *Rib)</span> <span class="fname">InsertIPv6</span>(<span
+                        class="param-name">route</span> <span class="param-type">Route</span>)</div>
+                <div class="api-doc">
+                    InsertIPv6 adds a single IPv6 route. Rejects addresses outside 2000::/3 and prefix lengths outside
+                    /8–/48. Ignores IPv4 addresses.
+                </div>
+                <span class="api-note note-lock">⚑ v6 write lock</span>
+                <span class="api-note">mask /8–/48, 2000::/3 only</span>
+            </div>
+
+            <div class="api-entry" id="fn-InsertIPv6Batch">
+                <div class="api-sig"><span class="recv">func (r *Rib)</span> <span
+                        class="fname">InsertIPv6Batch</span>(<span class="param-name">routes</span> <span
+                        class="param-type">[]Route</span>) <span class="ret-type">[]netip.Prefix</span></div>
+                <div class="api-doc">Batch variant of InsertIPv6. Acquires the v6 write lock once. Returns
+                    newly-inserted prefixes.</div>
+                <span class="api-note note-lock">⚑ v6 write lock (once)</span>
+                <span class="api-note note-batch">✦ batch preferred</span>
+            </div>
+
+            <!-- Delete -->
+            <div class="api-group-title">Rib — Delete</div>
+
+            <div class="api-entry" id="fn-DeleteIPv4">
+                <div class="api-sig"><span class="recv">func (r *Rib)</span> <span class="fname">DeleteIPv4</span>(<span
+                        class="param-name">prefix</span> <span class="param-type">netip.Prefix</span>, <span
+                        class="param-name">pathID</span> <span class="param-type">uint32</span>)</div>
+                <div class="api-doc">
+                    DeleteIPv4 removes a specific path (identified by <code>pathID</code>) from the given IPv4 prefix.
+                    If the prefix has remaining paths it stays in the trie. If no paths remain, the trie node is removed
+                    and empty parent nodes are pruned upward. The corresponding <code>RouteAttributes</code> refCount is
+                    decremented; the attribute is evicted from the global table when it reaches zero.
+                    <br><br>
+                    Use <code>pathID = 0</code> for non-Add-Path sessions.
+                </div>
+                <span class="api-note note-lock">⚑ v4 write lock</span>
+            </div>
+
+            <div class="api-entry" id="fn-DeleteIPv4Batch">
+                <div class="api-sig"><span class="recv">func (r *Rib)</span> <span
+                        class="fname">DeleteIPv4Batch</span>(<span class="param-name">prefixes</span> <span
+                        class="param-type">[]PrefixWithID</span>) <span class="ret-type">[]netip.Prefix</span></div>
+                <div class="api-doc">
+                    Batch variant of DeleteIPv4. Acquires the v4 write lock once. Returns prefixes that were
+                    <em>completely removed</em> from the trie (all paths gone), useful for driving downstream
+                    withdrawals.
+                </div>
+                <pre><code>withdrawn <span class="op">:=</span> rib.<span class="fn">DeleteIPv4Batch</span>([]rt.<span class="ty">PrefixWithID</span>{
+    {Prefix: netip.<span class="fn">MustParsePrefix</span>(<span class="st">"1.1.1.0/24"</span>), PathID: <span class="nu">101</span>},
+    {Prefix: netip.<span class="fn">MustParsePrefix</span>(<span class="st">"2.2.2.0/24"</span>), PathID: <span class="nu">0</span>},
+})
+<span class="kw">for</span> _, p <span class="op">:=</span> <span class="kw">range</span> withdrawn {
+    <span class="fn">withdraw</span>(p)  <span class="cm">// prefix is fully gone</span>
+}</code></pre>
+                <span class="api-note note-lock">⚑ v4 write lock (once)</span>
+                <span class="api-note note-batch">✦ batch preferred</span>
+            </div>
+
+            <div class="api-entry" id="fn-DeleteIPv6">
+                <div class="api-sig"><span class="recv">func (r *Rib)</span> <span class="fname">DeleteIPv6</span>(<span
+                        class="param-name">prefix</span> <span class="param-type">netip.Prefix</span>, <span
+                        class="param-name">pathID</span> <span class="param-type">uint32</span>)</div>
+                <div class="api-doc">IPv6 equivalent of DeleteIPv4.</div>
+                <span class="api-note note-lock">⚑ v6 write lock</span>
+            </div>
+
+            <div class="api-entry" id="fn-DeleteIPv6Batch">
+                <div class="api-sig"><span class="recv">func (r *Rib)</span> <span
+                        class="fname">DeleteIPv6Batch</span>(<span class="param-name">prefixes</span> <span
+                        class="param-type">[]PrefixWithID</span>) <span class="ret-type">[]netip.Prefix</span></div>
+                <div class="api-doc">Batch variant of DeleteIPv6. Acquires the v6 write lock once. Returns fully-removed
+                    prefixes.</div>
+                <span class="api-note note-lock">⚑ v6 write lock (once)</span>
+                <span class="api-note note-batch">✦ batch preferred</span>
+            </div>
+
+            <!-- Search -->
+            <div class="api-group-title">Rib — Longest Prefix Match</div>
+
+            <div class="api-entry" id="fn-SearchIPv4">
+                <div class="api-sig"><span class="recv">func (r *Rib)</span> <span class="fname">SearchIPv4</span>(<span
+                        class="param-name">ip</span> <span class="param-type">netip.Addr</span>) <span
+                        class="ret-type">*Route</span></div>
+                <div class="api-doc">
+                    SearchIPv4 performs a <strong>Longest Prefix Match</strong> for the given IPv4 address and returns
+                    the single best-path route. The best path within the matching prefix node is selected by
+                    <code>bestPath()</code> using the same criteria as <code>SelectBest</code>.
+                    <br><br>
+                    The returned <code>*Route</code> is freshly allocated; the embedded <code>*RouteAttributes</code>
+                    is a direct pointer into the deduplicated table — do not modify it.
+                    Returns <code>nil</code> if no covering prefix is found or if <code>ip</code> is IPv6.
+                </div>
+                <pre><code>r <span class="op">:=</span> rib.<span class="fn">SearchIPv4</span>(netip.<span class="fn">MustParseAddr</span>(<span class="st">"8.8.4.4"</span>))
+<span class="kw">if</span> r <span class="op">!= nil</span> {
+    fmt.<span class="fn">Println</span>(r.Prefix, r.Attributes.AsPath)
+}</code></pre>
+                <span class="api-note note-safe">read-locked</span>
+                <span class="api-note note-lpm">◈ longest prefix match</span>
+            </div>
+
+            <div class="api-entry" id="fn-AllPathsSearchIPv4">
+                <div class="api-sig"><span class="recv">func (r *Rib)</span> <span
+                        class="fname">AllPathsSearchIPv4</span>(<span class="param-name">ip</span> <span
+                        class="param-type">netip.Addr</span>) <span class="ret-type">[]Route</span></div>
+                <div class="api-doc">
+                    AllPathsSearchIPv4 performs an LPM lookup and returns all paths stored at the matching node,
+                    one <code>Route</code> per PathID. Returns <code>nil</code> if no covering prefix exists.
+                    Combine with <code>SelectBest</code> to replicate BGP decision process, or inspect all paths
+                    directly for policy purposes.
+                </div>
+                <pre><code>paths <span class="op">:=</span> rib.<span class="fn">AllPathsSearchIPv4</span>(netip.<span class="fn">MustParseAddr</span>(<span class="st">"8.8.4.4"</span>))
+fmt.<span class="fn">Printf</span>(<span class="st">"%d paths available\n"</span>, <span class="fn">len</span>(paths))</code></pre>
+                <span class="api-note note-safe">read-locked</span>
+                <span class="api-note note-lpm">◈ longest prefix match</span>
+            </div>
+
+            <div class="api-entry" id="fn-SearchIPv6">
+                <div class="api-sig"><span class="recv">func (r *Rib)</span> <span class="fname">SearchIPv6</span>(<span
+                        class="param-name">ip</span> <span class="param-type">netip.Addr</span>) <span
+                        class="ret-type">*Route</span></div>
+                <div class="api-doc">
+                    SearchIPv6 performs an LPM lookup for the given IPv6 address. Only addresses within 2000::/3
+                    (first byte 0x20–0x3F) are supported; all others return <code>nil</code>. Returns the best-path
+                    route or <code>nil</code>.
+                </div>
+                <span class="api-note note-safe">read-locked</span>
+                <span class="api-note note-lpm">◈ longest prefix match</span>
+            </div>
+
+            <div class="api-entry" id="fn-AllPathsSearchIPv6">
+                <div class="api-sig"><span class="recv">func (r *Rib)</span> <span
+                        class="fname">AllPathsSearchIPv6</span>(<span class="param-name">ip</span> <span
+                        class="param-type">netip.Addr</span>) <span class="ret-type">[]Route</span></div>
+                <div class="api-doc">IPv6 equivalent of AllPathsSearchIPv4. Returns all paths at the LPM-matching node.
+                </div>
+                <span class="api-note note-safe">read-locked</span>
+                <span class="api-note note-lpm">◈ longest prefix match</span>
+            </div>
+
+            <!-- Lookup exact -->
+            <div class="api-group-title">Rib — Exact Prefix Lookup</div>
+
+            <div class="api-entry" id="fn-LookupIPv4">
+                <div class="api-sig"><span class="recv">func (r *Rib)</span> <span class="fname">LookupIPv4</span>(<span
+                        class="param-name">prefix</span> <span class="param-type">netip.Prefix</span>) <span
+                        class="ret-type">*Route</span></div>
+                <div class="api-doc">
+                    LookupIPv4 performs an <strong>exact prefix match</strong>. Unlike <code>SearchIPv4</code>, it
+                    walks the trie to the specific depth indicated by the prefix mask and returns a route only if one
+                    exists at that <em>exact</em> node. Returns <code>nil</code> for any less-specific covering prefix.
+                    <br><br>
+                    Use this when you need to check whether a specific prefix is present in the table, e.g. for
+                    origin validation.
+                </div>
+                <pre><code><span class="cm">// Only returns a route if 8.8.8.0/24 is exactly in the RIB.</span>
+<span class="cm">// A covering /20 would NOT match here.</span>
+r <span class="op">:=</span> rib.<span class="fn">LookupIPv4</span>(netip.<span class="fn">MustParsePrefix</span>(<span class="st">"8.8.8.0/24"</span>))</code></pre>
+                <span class="api-note note-safe">read-locked</span>
+                <span class="api-note note-exact">◇ exact match</span>
+            </div>
+
+            <div class="api-entry" id="fn-LookupIPv6">
+                <div class="api-sig"><span class="recv">func (r *Rib)</span> <span class="fname">LookupIPv6</span>(<span
+                        class="param-name">prefix</span> <span class="param-type">netip.Prefix</span>) <span
+                        class="ret-type">*Route</span></div>
+                <div class="api-doc">IPv6 equivalent of LookupIPv4. Walks the trie to the exact prefix depth and returns
+                    a route only on exact match.</div>
+                <span class="api-note note-safe">read-locked</span>
+                <span class="api-note note-exact">◇ exact match</span>
+            </div>
+
+        </section>
+
+        <hr class="divider">
+
+        <!-- CONCURRENCY NOTE -->
+        <section>
+            <h2>Concurrency notes</h2>
+            <p>
+                The RIB uses two independent <code>sync.RWMutex</code> instances — <code>v4mu</code> and
+                <code>v6mu</code>. This means concurrent readers for one address family are never blocked by a
+                writer for the other. The attribute table (<code>attrTable</code>) carries its own
+                <code>sync.Mutex</code>, acquired briefly during attribute lookup/insert/release inside write-locked
+                operations.
+            </p>
+            <p>
+                <strong>Safe patterns:</strong> simultaneous IPv4 lookups from many goroutines; concurrent IPv4
+                write + IPv6 read; concurrent IPv4 batch inserts (serialised by <code>v4mu</code>) while IPv6
+                batch deletes proceed in parallel.
+            </p>
+            <p>
+                <strong>Avoid:</strong> calling <code>Reset()</code> from a goroutine while another goroutine
+                holds a reference to a <code>*RouteAttributes</code> pointer returned by a previous search — the
+                pointer remains valid (GC won't collect a live reference), but the data it describes is no longer
+                in the active RIB.
+            </p>
+            <p>
+                <strong>Do not mutate</strong> the <code>*RouteAttributes</code> pointer returned by search/lookup
+                methods. It points directly into the shared deduplication table; mutation would corrupt other routes
+                sharing the same attribute set.
+            </p>
+        </section>
+
+    </main>
+</body>
+
+</html>
