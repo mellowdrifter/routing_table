@@ -1,4 +1,4 @@
 module github.com/mellowdrifter/routing_table
 
-go 1.18
+go 1.26
 

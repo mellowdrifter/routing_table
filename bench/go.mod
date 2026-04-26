@@ -1,6 +1,6 @@
 module github.com/mellowdrifter/routing_table/bench
 
-go 1.18
+go 1.26
 
 replace github.com/mellowdrifter/routing_table => ../
 

@@ -130,7 +130,7 @@ func main() {
 	}
 	start = time.Now()
 	for _, ip := range fullv6table2 {
-		router.DeleteIPv6(ip)
+		router.DeleteIPv6(ip, 0)
 	}
 	fmt.Printf("took %s to delete %d IPv6 prefixes\n", time.Since(start), len(fullv6table2))
 	f.Close()
@@ -155,7 +155,7 @@ func main() {
 	}
 	start = time.Now()
 	for _, ip := range fullv4table2 {
-		router.DeleteIPv4(ip)
+		router.DeleteIPv4(ip, 0)
 	}
 	fmt.Printf("took %s to delete %d IPv4 prefixes\n", time.Since(start), len(fullv4table2))
 	f.Close()

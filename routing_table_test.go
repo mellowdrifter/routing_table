@@ -162,8 +162,8 @@ func TestDeleteLast(t *testing.T) {
 	router.InsertIPv4(rib.Route{Prefix: ip3})
 
 	router.DeleteIPv4(ip3, 0)
-router.DeleteIPv4(ip2, 0)
-router.DeleteIPv4(ip1, 0)
+	router.DeleteIPv4(ip2, 0)
+	router.DeleteIPv4(ip1, 0)
 }
 
 // TestDuplicateInsertIPv4 verifies that inserting the same prefix twice
@@ -222,7 +222,7 @@ func TestDeleteNonExistent(t *testing.T) {
 
 	// Delete from a completely empty RIB — should not panic or corrupt state.
 	router.DeleteIPv4(netip.MustParsePrefix("11.0.0.0/8"), 0)
-router.DeleteIPv6(netip.MustParsePrefix("2001:db8::/32"), 0)
+	router.DeleteIPv6(netip.MustParsePrefix("2001:db8::/32"), 0)
 
 	// Insert one prefix, then delete a different one at the same mask length.
 	router.InsertIPv4(rib.Route{Prefix: netip.MustParsePrefix("10.0.0.0/24")})
@@ -734,15 +734,15 @@ func TestBatchOperations(t *testing.T) {
 	}
 
 	rBatch4 := []rib.Route{}
-for _, p := range v4Batch {
-rBatch4 = append(rBatch4, rib.Route{Prefix: p})
-}
-router.InsertIPv4Batch(rBatch4)
+	for _, p := range v4Batch {
+		rBatch4 = append(rBatch4, rib.Route{Prefix: p})
+	}
+	router.InsertIPv4Batch(rBatch4)
 	rBatch6 := []rib.Route{}
-for _, p := range v6Batch {
-rBatch6 = append(rBatch6, rib.Route{Prefix: p})
-}
-router.InsertIPv6Batch(rBatch6)
+	for _, p := range v6Batch {
+		rBatch6 = append(rBatch6, rib.Route{Prefix: p})
+	}
+	router.InsertIPv6Batch(rBatch6)
 
 	if router.V4Count() != 2 || router.V6Count() != 2 {
 		t.Fatalf("batch insert failed, counts: v4=%d, v6=%d", router.V4Count(), router.V6Count())
