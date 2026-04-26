@@ -54,6 +54,8 @@ type Rib struct {
 
 	v4Count     int
 	v6Count     int
+	v4PathCount int
+	v6PathCount int
 	v4NodeCount uint64
 	v6NodeCount uint64
 	v4masks     map[int]int
@@ -226,6 +228,8 @@ func (r *Rib) Reset() {
 	r.ipv6Root = [32]*node{}
 	r.v4Count = 0
 	r.v6Count = 0
+	r.v4PathCount = 0
+	r.v6PathCount = 0
 	r.v4NodeCount = 0
 	r.v6NodeCount = 0
 	r.v4masks = make(map[int]int)
@@ -291,14 +295,7 @@ func (r *Rib) V4PathCount() int {
 	}
 	r.v4mu.RLock()
 	defer r.v4mu.RUnlock()
-
-	var total int
-	for i := 0; i < 256; i++ {
-		if r.ipv4Root[i] != nil {
-			total += countPaths(r.ipv4Root[i])
-		}
-	}
-	return total
+	return r.v4PathCount
 }
 
 // V6PathCount returns the total number of IPv6 paths in the RIB.
@@ -308,24 +305,7 @@ func (r *Rib) V6PathCount() int {
 	}
 	r.v6mu.RLock()
 	defer r.v6mu.RUnlock()
-
-	var total int
-	for i := 0; i < 32; i++ {
-		if r.ipv6Root[i] != nil {
-			total += countPaths(r.ipv6Root[i])
-		}
-	}
-	return total
-}
-
-func countPaths(n *node) int {
-	if n == nil {
-		return 0
-	}
-	count := len(n.paths)
-	count += countPaths(n.children[0])
-	count += countPaths(n.children[1])
-	return count
+	return r.v6PathCount
 }
 
 
@@ -411,6 +391,8 @@ func (r *Rib) insertIPv4Unlocked(route Route) bool {
 		}
 		if oldAttr, ok := currentNode.paths[route.PathID]; ok {
 			r.attrTable.release(oldAttr)
+		} else {
+			r.v4PathCount++
 		}
 		currentNode.paths[route.PathID] = dedupAttr
 		return isNew
@@ -438,6 +420,8 @@ func (r *Rib) insertIPv4Unlocked(route Route) bool {
 				}
 				if oldAttr, ok := currentNode.paths[route.PathID]; ok {
 					r.attrTable.release(oldAttr)
+				} else {
+					r.v4PathCount++
 				}
 				currentNode.paths[route.PathID] = dedupAttr
 				return isNew
@@ -514,6 +498,8 @@ func (r *Rib) insertIPv6Unlocked(route Route) bool {
 		}
 		if oldAttr, ok := currentNode.paths[route.PathID]; ok {
 			r.attrTable.release(oldAttr)
+		} else {
+			r.v6PathCount++
 		}
 		currentNode.paths[route.PathID] = dedupAttr
 		return isNew
@@ -541,6 +527,8 @@ func (r *Rib) insertIPv6Unlocked(route Route) bool {
 				}
 				if oldAttr, ok := currentNode.paths[route.PathID]; ok {
 					r.attrTable.release(oldAttr)
+				} else {
+					r.v6PathCount++
 				}
 				currentNode.paths[route.PathID] = dedupAttr
 				return isNew
@@ -599,6 +587,7 @@ func (r *Rib) deleteIPv4Unlocked(prefix netip.Prefix, pathID uint32) bool {
 		}
 		r.attrTable.release(attr)
 		delete(currentNode.paths, pathID)
+		r.v4PathCount--
 
 		isRemoved := false
 		if len(currentNode.paths) == 0 {
@@ -631,6 +620,7 @@ func (r *Rib) deleteIPv4Unlocked(prefix netip.Prefix, pathID uint32) bool {
 				}
 				r.attrTable.release(attr)
 				delete(currentNode.paths, pathID)
+				r.v4PathCount--
 
 				isRemoved := false
 				if len(currentNode.paths) == 0 {
@@ -703,6 +693,7 @@ func (r *Rib) deleteIPv6Unlocked(prefix netip.Prefix, pathID uint32) bool {
 		}
 		r.attrTable.release(attr)
 		delete(currentNode.paths, pathID)
+		r.v6PathCount--
 
 		isRemoved := false
 		if len(currentNode.paths) == 0 {
@@ -733,6 +724,7 @@ func (r *Rib) deleteIPv6Unlocked(prefix netip.Prefix, pathID uint32) bool {
 				}
 				r.attrTable.release(attr)
 				delete(currentNode.paths, pathID)
+				r.v6PathCount--
 
 				isRemoved := false
 				if len(currentNode.paths) == 0 {
