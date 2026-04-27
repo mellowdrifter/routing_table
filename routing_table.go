@@ -12,54 +12,44 @@ import (
 	"time"
 )
 
-type router struct {
-	ribs []Rib
-}
 
-// Rib represents a Routing Information Base, storing IPv4 and IPv6 prefixes
-// in binary tries optimised for internet routing table lookups (longest prefix match).
-//
-// The tries use direct array indexing for the first byte of each address,
-// skipping 8 levels of binary trie traversal:
-//   - IPv4: [256]*node indexed by first octet. No internet prefix is shorter than /8.
-//   - IPv6: [32]*node indexed by (first_byte - 0x20). All global unicast lives
-//     in 2000::/3, so the first byte is always 0x20–0x3F (32 possible values).
-//
-// Maximum supported prefix lengths: /24 for IPv4, /48 for IPv6.
-//
-// Concurrent access is supported via separate per-address-family mutexes,
-// meaning IPv4 updates do not block IPv6 reads/updates.
-type Rib struct {
-	v4mu *sync.RWMutex
-	v6mu *sync.RWMutex
+// IPv4Rib represents an IPv4 Routing Information Base.
+type IPv4Rib struct {
+	mu *sync.RWMutex
 
-	// ipv4Root is indexed directly by the first octet of the IPv4 address.
+	// root is indexed directly by the first octet of the IPv4 address.
 	// This replaces 8 levels of binary trie traversal with a single array lookup.
 	// Supports prefix lengths /8 through /24.
-	ipv4Root [256]*node
-
-	// ipv6Root is indexed by (first_byte - 0x20). All global unicast IPv6 space
-	// is assigned from 2000::/3, meaning the first byte is always in the range
-	// 0x20–0x3F. Subtracting 0x20 gives a compact 0–31 index.
-	// Supports prefix lengths /8 through /48.
-	// ipv6Root is indexed by (first_byte - 0x20). All global unicast IPv6 space
-	// is assigned from 2000::/3, meaning the first byte is always in the range
-	// 0x20–0x3F. Subtracting 0x20 gives a compact 0–31 index.
-	// Supports prefix lengths /8 through /48.
-	ipv6Root [32]*node
+	root [256]*node
 
 	// attrTable deduplicates and reference-counts BGP route attributes
 	// across all prefixes, drastically reducing memory usage.
 	attrTable *attrTable
 
-	v4Count     int
-	v6Count     int
-	v4PathCount int
-	v6PathCount int
-	v4NodeCount uint64
-	v6NodeCount uint64
-	v4masks     map[int]int
-	v6masks     map[int]int
+	count     int
+	pathCount int
+	nodeCount uint64
+	masks     map[int]int
+}
+
+// IPv6Rib represents an IPv6 Routing Information Base.
+type IPv6Rib struct {
+	mu *sync.RWMutex
+
+	// root is indexed by (first_byte - 0x20). All global unicast IPv6 space
+	// is assigned from 2000::/3, meaning the first byte is always in the range
+	// 0x20–0x3F. Subtracting 0x20 gives a compact 0–31 index.
+	// Supports prefix lengths /8 through /48.
+	root [32]*node
+
+	// attrTable deduplicates and reference-counts BGP route attributes
+	// across all prefixes, drastically reducing memory usage.
+	attrTable *attrTable
+
+	count     int
+	pathCount int
+	nodeCount uint64
+	masks     map[int]int
 }
 
 // LargeCommunity represents a BGP Large Community (RFC 8092).
@@ -202,155 +192,181 @@ func GetNewRouter() router {
 	return router{}
 }
 
-// GetNewRib creates a new empty RIB. The root arrays are zero-initialised
-// (all nil pointers) — nodes are created on demand during insertion.
-// It also initializes the attribute deduplication table.
-func GetNewRib() Rib {
-	return Rib{
-		v4mu:      &sync.RWMutex{},
-		v6mu:      &sync.RWMutex{},
+// NewIPv4Rib creates a new empty IPv4 RIB.
+func NewIPv4Rib() *IPv4Rib {
+	return &IPv4Rib{
+		mu:        &sync.RWMutex{},
 		attrTable: newAttrTable(),
-		v4masks:   make(map[int]int),
-		v6masks:   make(map[int]int),
+		masks:     make(map[int]int),
+	}
+}
+
+// NewIPv6Rib creates a new empty IPv6 RIB.
+func NewIPv6Rib() *IPv6Rib {
+	return &IPv6Rib{
+		mu:        &sync.RWMutex{},
+		attrTable: newAttrTable(),
+		masks:     make(map[int]int),
 	}
 }
 
 // Reset atomically flushes the entire routing table and resets all counters.
-// This is extremely fast as it only re-assigns the root arrays, allowing the GC
-// to clean up the abandoned trie nodes. It also clears the attribute table.
-func (r *Rib) Reset() {
-	r.v4mu.Lock()
-	r.v6mu.Lock()
-	defer r.v4mu.Unlock()
-	defer r.v6mu.Unlock()
+func (r *IPv4Rib) Reset() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 
-	r.ipv4Root = [256]*node{}
-	r.ipv6Root = [32]*node{}
-	r.v4Count = 0
-	r.v6Count = 0
-	r.v4PathCount = 0
-	r.v6PathCount = 0
-	r.v4NodeCount = 0
-	r.v6NodeCount = 0
-	r.v4masks = make(map[int]int)
-	r.v6masks = make(map[int]int)
+	r.root = [256]*node{}
+	r.count = 0
+	r.pathCount = 0
+	r.nodeCount = 0
+	r.masks = make(map[int]int)
 	r.attrTable = newAttrTable()
 }
 
+// Reset atomically flushes the entire routing table and resets all counters.
+func (r *IPv6Rib) Reset() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	r.root = [32]*node{}
+	r.count = 0
+	r.pathCount = 0
+	r.nodeCount = 0
+	r.masks = make(map[int]int)
+	r.attrTable = newAttrTable()
+}
+
+type router struct {
+	v4ribs []*IPv4Rib
+	v6ribs []*IPv6Rib
+}
+
+func (r *IPv4Rib) PrintRib() {
+	r.mu.RLock()
+	c := r.count
+	m := make(map[int]int, len(r.masks))
+	for k, v := range r.masks {
+		m[k] = v
+	}
+	r.mu.RUnlock()
+
+	fmt.Printf("%d ipv4 prefixes\n", c)
+	fmt.Printf("%v\n", m)
+}
+
+func (r *IPv6Rib) PrintRib() {
+	r.mu.RLock()
+	c := r.count
+	m := make(map[int]int, len(r.masks))
+	for k, v := range r.masks {
+		m[k] = v
+	}
+	r.mu.RUnlock()
+
+	fmt.Printf("%d ipv6 prefixes\n", c)
+	fmt.Printf("%v\n", m)
+}
+
 func (r *router) Size() int {
-	return len(r.ribs)
+	return len(r.v4ribs) + len(r.v6ribs)
 }
 
-func (r *router) AddRib(rib Rib) {
-	r.ribs = append(r.ribs, rib)
+func (r *router) AddIPv4Rib(rib *IPv4Rib) {
+	r.v4ribs = append(r.v4ribs, rib)
 }
 
-func (r *Rib) PrintRib() {
-	r.v4mu.RLock()
-	v4c := r.v4Count
-	v4m := make(map[int]int, len(r.v4masks))
-	for k, v := range r.v4masks {
-		v4m[k] = v
-	}
-	r.v4mu.RUnlock()
-
-	r.v6mu.RLock()
-	v6c := r.v6Count
-	v6m := make(map[int]int, len(r.v6masks))
-	for k, v := range r.v6masks {
-		v6m[k] = v
-	}
-	r.v6mu.RUnlock()
-
-	fmt.Printf("%d ipv4 prefixes\n", v4c)
-	fmt.Printf("%d ipv6 prefixes\n", v6c)
-	fmt.Printf("%v\n", v4m)
-	fmt.Printf("%v\n", v6m)
+func (r *router) AddIPv6Rib(rib *IPv6Rib) {
+	r.v6ribs = append(r.v6ribs, rib)
 }
 
-// V4Count returns the total number of IPv4 prefixes in the RIB.
-func (r *Rib) V4Count() int {
-	if r.v4mu == nil {
+// Count returns the total number of prefixes in the RIB.
+func (r *IPv4Rib) Count() int {
+	if r.mu == nil {
 		return 0
 	}
-	r.v4mu.RLock()
-	defer r.v4mu.RUnlock()
-	return r.v4Count
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.count
 }
 
-// V6Count returns the total number of IPv6 prefixes in the RIB.
-func (r *Rib) V6Count() int {
-	if r.v6mu == nil {
+// Count returns the total number of prefixes in the RIB.
+func (r *IPv6Rib) Count() int {
+	if r.mu == nil {
 		return 0
 	}
-	r.v6mu.RLock()
-	defer r.v6mu.RUnlock()
-	return r.v6Count
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.count
 }
 
-// V4PathCount returns the total number of IPv4 paths in the RIB.
-func (r *Rib) V4PathCount() int {
-	if r.v4mu == nil {
+// PathCount returns the total number of paths in the RIB.
+func (r *IPv4Rib) PathCount() int {
+	if r.mu == nil {
 		return 0
 	}
-	r.v4mu.RLock()
-	defer r.v4mu.RUnlock()
-	return r.v4PathCount
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.pathCount
 }
 
-// V6PathCount returns the total number of IPv6 paths in the RIB.
-func (r *Rib) V6PathCount() int {
-	if r.v6mu == nil {
+// PathCount returns the total number of paths in the RIB.
+func (r *IPv6Rib) PathCount() int {
+	if r.mu == nil {
 		return 0
 	}
-	r.v6mu.RLock()
-	defer r.v6mu.RUnlock()
-	return r.v6PathCount
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.pathCount
 }
 
-
-// GetSubnets returns a copy of the subnet mask distributions for v4 and v6.
-func (r *Rib) GetSubnets() (map[int]int, map[int]int) {
-	if r.v4mu == nil || r.v6mu == nil {
-		return nil, nil
+// GetSubnets returns a copy of the subnet mask distribution.
+func (r *IPv4Rib) GetSubnets() map[int]int {
+	if r.mu == nil {
+		return nil
 	}
-	r.v4mu.RLock()
-	v4 := make(map[int]int, len(r.v4masks))
-	for k, v := range r.v4masks {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	v4 := make(map[int]int, len(r.masks))
+	for k, v := range r.masks {
 		v4[k] = v
 	}
-	r.v4mu.RUnlock()
-
-	r.v6mu.RLock()
-	v6 := make(map[int]int, len(r.v6masks))
-	for k, v := range r.v6masks {
-		v6[k] = v
-	}
-	r.v6mu.RUnlock()
-
-	return v4, v6
+	return v4
 }
 
-// InsertIPv4 adds an IPv4 route to the RIB, or updates its attributes if it already exists.
-func (r *Rib) InsertIPv4(route Route) {
+// GetSubnets returns a copy of the subnet mask distribution.
+func (r *IPv6Rib) GetSubnets() map[int]int {
+	if r.mu == nil {
+		return nil
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	v6 := make(map[int]int, len(r.masks))
+	for k, v := range r.masks {
+		v6[k] = v
+	}
+	return v6
+}
+
+// Insert adds an IPv4 route to the RIB, or updates its attributes if it already exists.
+func (r *IPv4Rib) Insert(route Route) {
 	if route.Prefix.Addr().Is6() {
 		return
 	}
-	r.v4mu.Lock()
-	defer r.v4mu.Unlock()
-	r.insertIPv4Unlocked(route)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.insertUnlocked(route)
 }
 
-// InsertIPv4Batch adds multiple IPv4 routes to the RIB, acquiring the lock only once.
+// InsertBatch adds multiple IPv4 routes to the RIB, acquiring the lock only once.
 // Returns a slice of prefixes that were newly added to the RIB (went from 0 to 1 paths).
-func (r *Rib) InsertIPv4Batch(routes []Route) []netip.Prefix {
-	r.v4mu.Lock()
-	defer r.v4mu.Unlock()
+func (r *IPv4Rib) InsertBatch(routes []Route) []netip.Prefix {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 
 	var newPrefixes []netip.Prefix
 	for _, rt := range routes {
 		if rt.Prefix.Addr().Is4() {
-			if r.insertIPv4Unlocked(rt) {
+			if r.insertUnlocked(rt) {
 				newPrefixes = append(newPrefixes, rt.Prefix)
 			}
 		}
@@ -358,7 +374,7 @@ func (r *Rib) InsertIPv4Batch(routes []Route) []netip.Prefix {
 	return newPrefixes
 }
 
-func (r *Rib) insertIPv4Unlocked(route Route) bool {
+func (r *IPv4Rib) insertUnlocked(route Route) bool {
 	mask := route.Prefix.Bits()
 
 	// Guard: no internet IPv4 prefix is shorter than /8 or longer than /24.
@@ -373,26 +389,26 @@ func (r *Rib) insertIPv4Unlocked(route Route) bool {
 	dedupAttr := r.attrTable.getOrInsert(route.Attributes)
 
 	// Direct array lookup by first octet — creates the entry node on first use.
-	if r.ipv4Root[addr[0]] == nil {
-		r.ipv4Root[addr[0]] = &node{
+	if r.root[addr[0]] == nil {
+		r.root[addr[0]] = &node{
 			paths: make(map[uint32]*RouteAttributes),
 		}
-		r.v4NodeCount++
+		r.nodeCount++
 	}
-	currentNode := r.ipv4Root[addr[0]]
+	currentNode := r.root[addr[0]]
 
 	// A /8 prefix stores directly on the array entry node.
 	if mask == 8 {
 		isNew := false
 		if len(currentNode.paths) == 0 {
-			r.v4Count++
-			r.v4masks[mask]++
+			r.count++
+			r.masks[mask]++
 			isNew = true
 		}
 		if oldAttr, ok := currentNode.paths[route.PathID]; ok {
 			r.attrTable.release(oldAttr)
 		} else {
-			r.v4PathCount++
+			r.pathCount++
 		}
 		currentNode.paths[route.PathID] = dedupAttr
 		return isNew
@@ -408,20 +424,20 @@ func (r *Rib) insertIPv4Unlocked(route Route) bool {
 					parent: currentNode,
 					paths:  make(map[uint32]*RouteAttributes),
 				}
-				r.v4NodeCount++
+				r.nodeCount++
 			}
 			currentNode = currentNode.children[bit]
 			if bitCount == mask {
 				isNew := false
 				if len(currentNode.paths) == 0 {
-					r.v4Count++
-					r.v4masks[mask]++
+					r.count++
+					r.masks[mask]++
 					isNew = true
 				}
 				if oldAttr, ok := currentNode.paths[route.PathID]; ok {
 					r.attrTable.release(oldAttr)
 				} else {
-					r.v4PathCount++
+					r.pathCount++
 				}
 				currentNode.paths[route.PathID] = dedupAttr
 				return isNew
@@ -432,26 +448,26 @@ func (r *Rib) insertIPv4Unlocked(route Route) bool {
 	return false
 }
 
-// InsertIPv6 adds an IPv6 route to the RIB, or updates its attributes if it already exists.
-func (r *Rib) InsertIPv6(route Route) {
+// Insert adds an IPv6 route to the RIB, or updates its attributes if it already exists.
+func (r *IPv6Rib) Insert(route Route) {
 	if route.Prefix.Addr().Is4() {
 		return
 	}
-	r.v6mu.Lock()
-	defer r.v6mu.Unlock()
-	r.insertIPv6Unlocked(route)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.insertUnlocked(route)
 }
 
-// InsertIPv6Batch adds multiple IPv6 routes to the RIB, acquiring the lock only once.
+// InsertBatch adds multiple IPv6 routes to the RIB, acquiring the lock only once.
 // Returns a slice of prefixes that were newly added to the RIB (went from 0 to 1 paths).
-func (r *Rib) InsertIPv6Batch(routes []Route) []netip.Prefix {
-	r.v6mu.Lock()
-	defer r.v6mu.Unlock()
+func (r *IPv6Rib) InsertBatch(routes []Route) []netip.Prefix {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 
 	var newPrefixes []netip.Prefix
 	for _, rt := range routes {
 		if rt.Prefix.Addr().Is6() {
-			if r.insertIPv6Unlocked(rt) {
+			if r.insertUnlocked(rt) {
 				newPrefixes = append(newPrefixes, rt.Prefix)
 			}
 		}
@@ -459,7 +475,7 @@ func (r *Rib) InsertIPv6Batch(routes []Route) []netip.Prefix {
 	return newPrefixes
 }
 
-func (r *Rib) insertIPv6Unlocked(route Route) bool {
+func (r *IPv6Rib) insertUnlocked(route Route) bool {
 	addr := route.Prefix.Addr().As16()
 	mask := route.Prefix.Bits()
 
@@ -480,26 +496,26 @@ func (r *Rib) insertIPv6Unlocked(route Route) bool {
 
 	// Map the first byte to array index 0–31 by subtracting 0x20.
 	idx := addr[0] - 0x20
-	if r.ipv6Root[idx] == nil {
-		r.ipv6Root[idx] = &node{
+	if r.root[idx] == nil {
+		r.root[idx] = &node{
 			paths: make(map[uint32]*RouteAttributes),
 		}
-		r.v6NodeCount++
+		r.nodeCount++
 	}
-	currentNode := r.ipv6Root[idx]
+	currentNode := r.root[idx]
 
 	// A /8 prefix stores directly on the array entry node.
 	if mask == 8 {
 		isNew := false
 		if len(currentNode.paths) == 0 {
-			r.v6Count++
-			r.v6masks[mask]++
+			r.count++
+			r.masks[mask]++
 			isNew = true
 		}
 		if oldAttr, ok := currentNode.paths[route.PathID]; ok {
 			r.attrTable.release(oldAttr)
 		} else {
-			r.v6PathCount++
+			r.pathCount++
 		}
 		currentNode.paths[route.PathID] = dedupAttr
 		return isNew
@@ -515,20 +531,20 @@ func (r *Rib) insertIPv6Unlocked(route Route) bool {
 					parent: currentNode,
 					paths:  make(map[uint32]*RouteAttributes),
 				}
-				r.v6NodeCount++
+				r.nodeCount++
 			}
 			currentNode = currentNode.children[bit]
 			if bitCount == mask {
 				isNew := false
 				if len(currentNode.paths) == 0 {
-					r.v6Count++
-					r.v6masks[mask]++
+					r.count++
+					r.masks[mask]++
 					isNew = true
 				}
 				if oldAttr, ok := currentNode.paths[route.PathID]; ok {
 					r.attrTable.release(oldAttr)
 				} else {
-					r.v6PathCount++
+					r.pathCount++
 				}
 				currentNode.paths[route.PathID] = dedupAttr
 				return isNew
@@ -539,26 +555,26 @@ func (r *Rib) insertIPv6Unlocked(route Route) bool {
 	return false
 }
 
-// DeleteIPv4 removes a specific path for an IPv4 prefix from the RIB.
-func (r *Rib) DeleteIPv4(prefix netip.Prefix, pathID uint32) {
+// Delete removes a specific path for an IPv4 prefix from the RIB.
+func (r *IPv4Rib) Delete(prefix netip.Prefix, pathID uint32) {
 	if prefix.Addr().Is6() {
 		return
 	}
-	r.v4mu.Lock()
-	defer r.v4mu.Unlock()
-	r.deleteIPv4Unlocked(prefix, pathID)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.deleteUnlocked(prefix, pathID)
 }
 
-// DeleteIPv4Batch removes multiple IPv4 paths from the RIB, acquiring the lock only once.
+// DeleteBatch removes multiple IPv4 paths from the RIB, acquiring the lock only once.
 // Returns a slice of prefixes that were completely removed from the RIB (went from 1 to 0 paths).
-func (r *Rib) DeleteIPv4Batch(prefixes []PrefixWithID) []netip.Prefix {
-	r.v4mu.Lock()
-	defer r.v4mu.Unlock()
+func (r *IPv4Rib) DeleteBatch(prefixes []PrefixWithID) []netip.Prefix {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 
 	var removedPrefixes []netip.Prefix
 	for _, p := range prefixes {
 		if p.Prefix.Addr().Is4() {
-			if r.deleteIPv4Unlocked(p.Prefix, p.PathID) {
+			if r.deleteUnlocked(p.Prefix, p.PathID) {
 				removedPrefixes = append(removedPrefixes, p.Prefix)
 			}
 		}
@@ -566,7 +582,7 @@ func (r *Rib) DeleteIPv4Batch(prefixes []PrefixWithID) []netip.Prefix {
 	return removedPrefixes
 }
 
-func (r *Rib) deleteIPv4Unlocked(prefix netip.Prefix, pathID uint32) bool {
+func (r *IPv4Rib) deleteUnlocked(prefix netip.Prefix, pathID uint32) bool {
 	mask := prefix.Bits()
 	if mask < 8 || mask > 24 {
 		return false
@@ -574,10 +590,10 @@ func (r *Rib) deleteIPv4Unlocked(prefix netip.Prefix, pathID uint32) bool {
 
 	addr := prefix.Addr().As4()
 
-	if r.ipv4Root[addr[0]] == nil {
+	if r.root[addr[0]] == nil {
 		return false
 	}
-	currentNode := r.ipv4Root[addr[0]]
+	currentNode := r.root[addr[0]]
 
 	// Deleting a /8: clear route on the array entry node.
 	if mask == 8 {
@@ -587,17 +603,17 @@ func (r *Rib) deleteIPv4Unlocked(prefix netip.Prefix, pathID uint32) bool {
 		}
 		r.attrTable.release(attr)
 		delete(currentNode.paths, pathID)
-		r.v4PathCount--
+		r.pathCount--
 
 		isRemoved := false
 		if len(currentNode.paths) == 0 {
-			r.v4Count--
-			r.v4masks[mask]--
+			r.count--
+			r.masks[mask]--
 			isRemoved = true
 			// Free the array entry if it has no children either.
 			if currentNode.children[0] == nil && currentNode.children[1] == nil {
-				r.ipv4Root[addr[0]] = nil
-				r.v4NodeCount--
+				r.root[addr[0]] = nil
+				r.nodeCount--
 			}
 		}
 		return isRemoved
@@ -620,20 +636,20 @@ func (r *Rib) deleteIPv4Unlocked(prefix netip.Prefix, pathID uint32) bool {
 				}
 				r.attrTable.release(attr)
 				delete(currentNode.paths, pathID)
-				r.v4PathCount--
+				r.pathCount--
 
 				isRemoved := false
 				if len(currentNode.paths) == 0 {
-					r.v4Count--
-					r.v4masks[mask]--
+					r.count--
+					r.masks[mask]--
 					isRemoved = true
 					// Prune empty nodes upward. deleteNode stops at parent == nil
 					// (the array entry node), so we clean that up separately.
-					r.v4NodeCount -= deleteNode(currentNode)
-					root := r.ipv4Root[addr[0]]
+					r.nodeCount -= deleteNode(currentNode)
+					root := r.root[addr[0]]
 					if root != nil && root.children[0] == nil && root.children[1] == nil && len(root.paths) == 0 {
-						r.ipv4Root[addr[0]] = nil
-						r.v4NodeCount--
+						r.root[addr[0]] = nil
+						r.nodeCount--
 					}
 				}
 				return isRemoved
@@ -644,26 +660,26 @@ func (r *Rib) deleteIPv4Unlocked(prefix netip.Prefix, pathID uint32) bool {
 	return false
 }
 
-// DeleteIPv6 removes a specific path for an IPv6 prefix from the RIB.
-func (r *Rib) DeleteIPv6(prefix netip.Prefix, pathID uint32) {
+// Delete removes a specific path for an IPv6 prefix from the RIB.
+func (r *IPv6Rib) Delete(prefix netip.Prefix, pathID uint32) {
 	if prefix.Addr().Is4() {
 		return
 	}
-	r.v6mu.Lock()
-	defer r.v6mu.Unlock()
-	r.deleteIPv6Unlocked(prefix, pathID)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.deleteUnlocked(prefix, pathID)
 }
 
-// DeleteIPv6Batch removes multiple IPv6 paths from the RIB, acquiring the lock only once.
+// DeleteBatch removes multiple IPv6 paths from the RIB, acquiring the lock only once.
 // Returns a slice of prefixes that were completely removed from the RIB (went from 1 to 0 paths).
-func (r *Rib) DeleteIPv6Batch(prefixes []PrefixWithID) []netip.Prefix {
-	r.v6mu.Lock()
-	defer r.v6mu.Unlock()
+func (r *IPv6Rib) DeleteBatch(prefixes []PrefixWithID) []netip.Prefix {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 
 	var removedPrefixes []netip.Prefix
 	for _, p := range prefixes {
 		if p.Prefix.Addr().Is6() {
-			if r.deleteIPv6Unlocked(p.Prefix, p.PathID) {
+			if r.deleteUnlocked(p.Prefix, p.PathID) {
 				removedPrefixes = append(removedPrefixes, p.Prefix)
 			}
 		}
@@ -671,7 +687,7 @@ func (r *Rib) DeleteIPv6Batch(prefixes []PrefixWithID) []netip.Prefix {
 	return removedPrefixes
 }
 
-func (r *Rib) deleteIPv6Unlocked(prefix netip.Prefix, pathID uint32) bool {
+func (r *IPv6Rib) deleteUnlocked(prefix netip.Prefix, pathID uint32) bool {
 	addr := prefix.Addr().As16()
 	mask := prefix.Bits()
 
@@ -680,10 +696,10 @@ func (r *Rib) deleteIPv6Unlocked(prefix netip.Prefix, pathID uint32) bool {
 	}
 
 	idx := addr[0] - 0x20
-	if r.ipv6Root[idx] == nil {
+	if r.root[idx] == nil {
 		return false
 	}
-	currentNode := r.ipv6Root[idx]
+	currentNode := r.root[idx]
 
 	// Deleting a /8: clear route on the array entry node.
 	if mask == 8 {
@@ -693,16 +709,16 @@ func (r *Rib) deleteIPv6Unlocked(prefix netip.Prefix, pathID uint32) bool {
 		}
 		r.attrTable.release(attr)
 		delete(currentNode.paths, pathID)
-		r.v6PathCount--
+		r.pathCount--
 
 		isRemoved := false
 		if len(currentNode.paths) == 0 {
-			r.v6Count--
-			r.v6masks[mask]--
+			r.count--
+			r.masks[mask]--
 			isRemoved = true
 			if currentNode.children[0] == nil && currentNode.children[1] == nil {
-				r.ipv6Root[idx] = nil
-				r.v6NodeCount--
+				r.root[idx] = nil
+				r.nodeCount--
 			}
 		}
 		return isRemoved
@@ -724,18 +740,18 @@ func (r *Rib) deleteIPv6Unlocked(prefix netip.Prefix, pathID uint32) bool {
 				}
 				r.attrTable.release(attr)
 				delete(currentNode.paths, pathID)
-				r.v6PathCount--
+				r.pathCount--
 
 				isRemoved := false
 				if len(currentNode.paths) == 0 {
-					r.v6Count--
-					r.v6masks[mask]--
+					r.count--
+					r.masks[mask]--
 					isRemoved = true
-					r.v6NodeCount -= deleteNode(currentNode)
-					root := r.ipv6Root[idx]
+					r.nodeCount -= deleteNode(currentNode)
+					root := r.root[idx]
 					if root != nil && root.children[0] == nil && root.children[1] == nil && len(root.paths) == 0 {
-						r.ipv6Root[idx] = nil
-						r.v6NodeCount--
+						r.root[idx] = nil
+						r.nodeCount--
 					}
 				}
 				return isRemoved
@@ -770,27 +786,23 @@ func deleteNode(node *node) uint64 {
 	return 0
 }
 
-// SearchIPv4 performs a longest prefix match (LPM) lookup for an IPv4 address.
-//
-// Uses the first octet as a direct array index, then walks the trie bit by bit.
-// At every node with a stored route, it records that as the current best match.
-// When a nil child is encountered, traversal stops and the best match is returned.
-func (r *Rib) SearchIPv4(ip netip.Addr) *Route {
+// Search performs a longest prefix match (LPM) lookup for an IPv4 address.
+func (r *IPv4Rib) Search(ip netip.Addr) *Route {
 	if ip.Is6() {
 		return nil
 	}
-	r.v4mu.RLock()
-	defer r.v4mu.RUnlock()
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 
 	var lpmAttr *RouteAttributes
 	var lpmLen int
 	addr := ip.As4()
 
 	// Look up the array entry for the first octet.
-	if r.ipv4Root[addr[0]] == nil {
+	if r.root[addr[0]] == nil {
 		return nil
 	}
-	currentNode := r.ipv4Root[addr[0]]
+	currentNode := r.root[addr[0]]
 
 	// Check for a /8 match at the array entry node.
 	if attr := currentNode.bestPath(); attr != nil {
@@ -826,23 +838,23 @@ v4walk:
 	return nil
 }
 
-// AllPathsSearchIPv4 performs a longest prefix match (LPM) lookup for an IPv4 address
+// AllPathsSearch performs a longest prefix match (LPM) lookup for an IPv4 address
 // and returns all available paths for that prefix.
-func (r *Rib) AllPathsSearchIPv4(ip netip.Addr) []Route {
+func (r *IPv4Rib) AllPathsSearch(ip netip.Addr) []Route {
 	if ip.Is6() {
 		return nil
 	}
-	r.v4mu.RLock()
-	defer r.v4mu.RUnlock()
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 
 	var lpmNode *node
 	var lpmLen int
 	addr := ip.As4()
 
-	if r.ipv4Root[addr[0]] == nil {
+	if r.root[addr[0]] == nil {
 		return nil
 	}
-	currentNode := r.ipv4Root[addr[0]]
+	currentNode := r.root[addr[0]]
 
 	if len(currentNode.paths) > 0 {
 		lpmNode = currentNode
@@ -873,16 +885,13 @@ v4walk:
 	return nil
 }
 
-// SearchIPv6 performs a longest prefix match (LPM) lookup for an IPv6 address.
-//
-// Validates the address is in 2000::/3, then uses the first byte as a direct
-// array index. Walks bits 9–48 collecting the most specific matching route.
-func (r *Rib) SearchIPv6(ip netip.Addr) *Route {
+// Search performs a longest prefix match (LPM) lookup for an IPv6 address.
+func (r *IPv6Rib) Search(ip netip.Addr) *Route {
 	if ip.Is4() {
 		return nil
 	}
-	r.v6mu.RLock()
-	defer r.v6mu.RUnlock()
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 
 	var lpmAttr *RouteAttributes
 	var lpmLen int
@@ -894,10 +903,10 @@ func (r *Rib) SearchIPv6(ip netip.Addr) *Route {
 	}
 
 	idx := addr[0] - 0x20
-	if r.ipv6Root[idx] == nil {
+	if r.root[idx] == nil {
 		return nil
 	}
-	currentNode := r.ipv6Root[idx]
+	currentNode := r.root[idx]
 
 	// Check for a match at the array entry node (e.g., a /8 route).
 	if attr := currentNode.bestPath(); attr != nil {
@@ -932,24 +941,24 @@ v6walk:
 	return nil
 }
 
-// AllPathsSearchIPv6 performs a longest prefix match (LPM) lookup for an IPv6 address
+// AllPathsSearch performs a longest prefix match (LPM) lookup for an IPv6 address
 // and returns all available paths for that prefix.
-func (r *Rib) AllPathsSearchIPv6(ip netip.Addr) []Route {
+func (r *IPv6Rib) AllPathsSearch(ip netip.Addr) []Route {
 	if ip.Is4() {
 		return nil
 	}
-	r.v6mu.RLock()
-	defer r.v6mu.RUnlock()
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 
 	var lpmNode *node
 	var lpmLen int
 	addr := ip.As16()
 
 	idx := addr[0] - 0x20
-	if r.ipv6Root[idx] == nil {
+	if r.root[idx] == nil {
 		return nil
 	}
-	currentNode := r.ipv6Root[idx]
+	currentNode := r.root[idx]
 
 	if len(currentNode.paths) > 0 {
 		lpmNode = currentNode
@@ -980,17 +989,13 @@ v6walk:
 	return nil
 }
 
-// LookupIPv4 performs an exact prefix match for an IPv4 prefix.
-//
-// Unlike SearchIPv4 (which does longest prefix match), this walks the trie
-// to the exact depth specified by the prefix mask and returns the route only
-// if one is stored at that exact node. Returns nil if no exact match exists.
-func (r *Rib) LookupIPv4(prefix netip.Prefix) *Route {
+// Lookup performs an exact prefix match for an IPv4 prefix.
+func (r *IPv4Rib) Lookup(prefix netip.Prefix) *Route {
 	if prefix.Addr().Is6() {
 		return nil
 	}
-	r.v4mu.RLock()
-	defer r.v4mu.RUnlock()
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 
 	mask := prefix.Bits()
 	if mask < 8 || mask > 24 {
@@ -999,10 +1004,10 @@ func (r *Rib) LookupIPv4(prefix netip.Prefix) *Route {
 
 	addr := prefix.Addr().As4()
 
-	if r.ipv4Root[addr[0]] == nil {
+	if r.root[addr[0]] == nil {
 		return nil
 	}
-	currentNode := r.ipv4Root[addr[0]]
+	currentNode := r.root[addr[0]]
 
 	// A /8 prefix is stored directly on the array entry node.
 	if mask == 8 {
@@ -1039,17 +1044,13 @@ func (r *Rib) LookupIPv4(prefix netip.Prefix) *Route {
 	return nil
 }
 
-// LookupIPv6 performs an exact prefix match for an IPv6 prefix.
-//
-// Walks the trie to the exact depth specified by the prefix mask and returns
-// the route only if one is stored at that exact node. Returns nil if no exact
-// match exists.
-func (r *Rib) LookupIPv6(prefix netip.Prefix) *Route {
+// Lookup performs an exact prefix match for an IPv6 prefix.
+func (r *IPv6Rib) Lookup(prefix netip.Prefix) *Route {
 	if prefix.Addr().Is4() {
 		return nil
 	}
-	r.v6mu.RLock()
-	defer r.v6mu.RUnlock()
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 
 	mask := prefix.Bits()
 	addr := prefix.Addr().As16()
@@ -1059,10 +1060,10 @@ func (r *Rib) LookupIPv6(prefix netip.Prefix) *Route {
 	}
 
 	idx := addr[0] - 0x20
-	if r.ipv6Root[idx] == nil {
+	if r.root[idx] == nil {
 		return nil
 	}
-	currentNode := r.ipv6Root[idx]
+	currentNode := r.root[idx]
 
 	// A /8 prefix is stored directly on the array entry node.
 	if mask == 8 {
@@ -1099,13 +1100,13 @@ func (r *Rib) LookupIPv6(prefix netip.Prefix) *Route {
 	return nil
 }
 
-// AllPathsIPv4 returns all stored paths for a specific IPv4 prefix.
-func (r *Rib) AllPathsIPv4(prefix netip.Prefix) []Route {
+// AllPaths returns all stored paths for a specific IPv4 prefix.
+func (r *IPv4Rib) AllPaths(prefix netip.Prefix) []Route {
 	if prefix.Addr().Is6() {
 		return nil
 	}
-	r.v4mu.RLock()
-	defer r.v4mu.RUnlock()
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 
 	mask := prefix.Bits()
 	if mask < 8 || mask > 24 {
@@ -1114,10 +1115,10 @@ func (r *Rib) AllPathsIPv4(prefix netip.Prefix) []Route {
 
 	addr := prefix.Addr().As4()
 
-	if r.ipv4Root[addr[0]] == nil {
+	if r.root[addr[0]] == nil {
 		return nil
 	}
-	currentNode := r.ipv4Root[addr[0]]
+	currentNode := r.root[addr[0]]
 
 	if mask == 8 {
 		return nodeToRoutes(currentNode, prefix)
@@ -1140,13 +1141,13 @@ func (r *Rib) AllPathsIPv4(prefix netip.Prefix) []Route {
 	return nil
 }
 
-// AllPathsIPv6 returns all stored paths for a specific IPv6 prefix.
-func (r *Rib) AllPathsIPv6(prefix netip.Prefix) []Route {
+// AllPaths returns all stored paths for a specific IPv6 prefix.
+func (r *IPv6Rib) AllPaths(prefix netip.Prefix) []Route {
 	if prefix.Addr().Is4() {
 		return nil
 	}
-	r.v6mu.RLock()
-	defer r.v6mu.RUnlock()
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 
 	mask := prefix.Bits()
 	addr := prefix.Addr().As16()
@@ -1156,10 +1157,10 @@ func (r *Rib) AllPathsIPv6(prefix netip.Prefix) []Route {
 	}
 
 	idx := addr[0] - 0x20
-	if r.ipv6Root[idx] == nil {
+	if r.root[idx] == nil {
 		return nil
 	}
-	currentNode := r.ipv6Root[idx]
+	currentNode := r.root[idx]
 
 	if mask == 8 {
 		return nodeToRoutes(currentNode, prefix)
@@ -1235,21 +1236,43 @@ func (s MemoryStats) String() string {
 }
 
 // MemoryUsage calculates and returns the memory statistics of the RIB matching BIRD's output format.
-func (r *Rib) MemoryUsage() MemoryStats {
-	r.v4mu.RLock()
-	v4nodes := r.v4NodeCount
-	r.v4mu.RUnlock()
-
-	r.v6mu.RLock()
-	v6nodes := r.v6NodeCount
-	r.v6mu.RUnlock()
+func (r *IPv4Rib) MemoryUsage() MemoryStats {
+	r.mu.RLock()
+	nodes := r.nodeCount
+	r.mu.RUnlock()
 
 	attrCount, sliceBytes := r.attrTable.GetStats()
 
 	// Effective Routing Tables: nodes (32 bytes)
-	rtEffective := (v4nodes + v6nodes) * 32
-	// Overhead Routing Tables: IPv4 Root Array (256 * 8) + IPv6 Root Array (32 * 8) = 2304 bytes
-	rtOverhead := uint64(2304)
+	rtEffective := nodes * 32
+	// Overhead Routing Tables: IPv4 Root Array (256 * 8) = 2048 bytes
+	rtOverhead := uint64(2048)
+
+	// Effective Route Attributes: RouteAttributes structs (88 bytes) + slice backing arrays
+	raEffective := attrCount*88 + sliceBytes
+	// Overhead Route Attributes: Go Map overhead (estimate ~48 bytes per entry)
+	raOverhead := attrCount * 48
+
+	return MemoryStats{
+		RoutingTablesEffective:   rtEffective,
+		RoutingTablesOverhead:    rtOverhead,
+		RouteAttributesEffective: raEffective,
+		RouteAttributesOverhead:  raOverhead,
+	}
+}
+
+// MemoryUsage calculates and returns the memory statistics of the RIB matching BIRD's output format.
+func (r *IPv6Rib) MemoryUsage() MemoryStats {
+	r.mu.RLock()
+	nodes := r.nodeCount
+	r.mu.RUnlock()
+
+	attrCount, sliceBytes := r.attrTable.GetStats()
+
+	// Effective Routing Tables: nodes (32 bytes)
+	rtEffective := nodes * 32
+	// Overhead Routing Tables: IPv6 Root Array (32 * 8) = 256 bytes
+	rtOverhead := uint64(256)
 
 	// Effective Route Attributes: RouteAttributes structs (88 bytes) + slice backing arrays
 	raEffective := attrCount*88 + sliceBytes
@@ -1265,9 +1288,7 @@ func (r *Rib) MemoryUsage() MemoryStats {
 }
 
 // StartLogging spawns a background goroutine that logs the RIB statistics once per minute.
-// It logs the IPv4 and IPv6 route counts, prefix distributions (ignoring zero counts),
-// and the BIRD-formatted memory usage. The goroutine stops when the provided context is canceled.
-func (r *Rib) StartLogging(ctx context.Context) {
+func (r *IPv4Rib) StartLogging(ctx context.Context) {
 	ticker := time.NewTicker(time.Minute)
 	go func() {
 		defer ticker.Stop()
@@ -1276,252 +1297,147 @@ func (r *Rib) StartLogging(ctx context.Context) {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				v4Count := r.V4Count()
-				v6Count := r.V6Count()
-				v4m, v6m := r.GetSubnets()
+				count := r.Count()
+				m := r.GetSubnets()
 
-				// Filter masks with 0 count
-				v4filtered := make(map[int]int)
-				for k, v := range v4m {
+				filtered := make(map[int]int)
+				for k, v := range m {
 					if v > 0 {
-						v4filtered[k] = v
-					}
-				}
-
-				v6filtered := make(map[int]int)
-				for k, v := range v6m {
-					if v > 0 {
-						v6filtered[k] = v
+						filtered[k] = v
 					}
 				}
 
 				memUsage := r.MemoryUsage().String()
 
-				log.Printf("RIB Stats:\nIPv4 Routes: %d\nIPv6 Routes: %d\nIPv4 Distribution: %v\nIPv6 Distribution: %v\n%s",
-					v4Count, v6Count, v4filtered, v6filtered, memUsage)
+				log.Printf("IPv4 RIB Stats:\nRoutes: %d\nDistribution: %v\n%s",
+					count, filtered, memUsage)
 			}
 		}
 	}()
 }
 
-// PrefixesByOriginASN walks the entire RIB and returns all IPv4 and IPv6
-// routes whose origin ASN (last element in the AS path) matches the given ASN.
-func (r *Rib) PrefixesByOriginASN(asn uint32) (v4 []Route, v6 []Route) {
-	// Walk IPv4 trie
-	r.v4mu.RLock()
+// StartLogging spawns a background goroutine that logs the RIB statistics once per minute.
+func (r *IPv6Rib) StartLogging(ctx context.Context) {
+	ticker := time.NewTicker(time.Minute)
+	go func() {
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				count := r.Count()
+				m := r.GetSubnets()
+
+				filtered := make(map[int]int)
+				for k, v := range m {
+					if v > 0 {
+						filtered[k] = v
+					}
+				}
+
+				memUsage := r.MemoryUsage().String()
+
+				log.Printf("IPv6 RIB Stats:\nRoutes: %d\nDistribution: %v\n%s",
+					count, filtered, memUsage)
+			}
+		}
+	}()
+}
+
+// PrefixesByOriginASN walks the entire RIB and returns all routes whose origin ASN
+// (last element in the AS path) matches the given ASN.
+func (r *IPv4Rib) PrefixesByOriginASN(asn uint32) (results []Route) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	for i := 0; i < 256; i++ {
-		if r.ipv4Root[i] != nil {
+		if r.root[i] != nil {
 			var addr [4]byte
 			addr[0] = byte(i)
-			collectByOriginV4(r.ipv4Root[i], asn, addr, 8, &v4)
+			collectByOriginV4(r.root[i], asn, addr, 8, &results)
 		}
 	}
-	r.v4mu.RUnlock()
+	return results
+}
 
-	// Walk IPv6 trie
-	r.v6mu.RLock()
+// PrefixesByOriginASN walks the entire RIB and returns all routes whose origin ASN
+// (last element in the AS path) matches the given ASN.
+func (r *IPv6Rib) PrefixesByOriginASN(asn uint32) (results []Route) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	for i := 0; i < 32; i++ {
-		if r.ipv6Root[i] != nil {
+		if r.root[i] != nil {
 			var addr [16]byte
 			addr[0] = byte(i + 0x20)
-			collectByOriginV6(r.ipv6Root[i], asn, addr, 8, &v6)
+			collectByOriginV6(r.root[i], asn, addr, 8, &results)
 		}
 	}
-	r.v6mu.RUnlock()
-
-	return v4, v6
+	return results
 }
 
-// collectByOriginV4 recursively walks the IPv4 trie, reconstructing the prefix
-// address by setting bits as it descends.
-func collectByOriginV4(n *node, asn uint32, addr [4]byte, depth int, results *[]Route) {
-	// Check all paths at this node
-	for id, attr := range n.paths {
-		path := attr.AsPath
-		if len(path) > 0 && path[len(path)-1] == asn {
-			ip := netip.AddrFrom4(addr)
-			*results = append(*results, Route{
-				Prefix:     netip.PrefixFrom(ip, depth),
-				Attributes: attr,
-				PathID:     id,
-			})
-		}
-	}
-
-	// Don't descend beyond /24
-	if depth >= 24 {
-		return
-	}
-
-	for bit := 0; bit < 2; bit++ {
-		if n.children[bit] != nil {
-			nextAddr := addr
-			byteIdx := depth / 8
-			bitPos := uint(7 - (depth % 8))
-			if bit == 1 {
-				nextAddr[byteIdx] |= 1 << bitPos
-			}
-			collectByOriginV4(n.children[bit], asn, nextAddr, depth+1, results)
-		}
-	}
-}
-
-// collectByOriginV6 recursively walks the IPv6 trie, reconstructing the prefix
-// address by setting bits as it descends.
-func collectByOriginV6(n *node, asn uint32, addr [16]byte, depth int, results *[]Route) {
-	for id, attr := range n.paths {
-		path := attr.AsPath
-		if len(path) > 0 && path[len(path)-1] == asn {
-			ip := netip.AddrFrom16(addr)
-			*results = append(*results, Route{
-				Prefix:     netip.PrefixFrom(ip, depth),
-				Attributes: attr,
-				PathID:     id,
-			})
-		}
-	}
-
-	// Don't descend beyond /48
-	if depth >= 48 {
-		return
-	}
-
-	for bit := 0; bit < 2; bit++ {
-		if n.children[bit] != nil {
-			nextAddr := addr
-			byteIdx := depth / 8
-			bitPos := uint(7 - (depth % 8))
-			if bit == 1 {
-				nextAddr[byteIdx] |= 1 << bitPos
-			}
-			collectByOriginV6(n.children[bit], asn, nextAddr, depth+1, results)
-		}
-	}
-}
-
-// PrefixesByAsPathRegex walks the entire RIB and returns all IPv4 and IPv6
-// routes whose AS path matches the given regular expression.
-func (r *Rib) PrefixesByAsPathRegex(re *regexp.Regexp) (v4 []Route, v6 []Route) {
-	// Walk IPv4 trie
-	r.v4mu.RLock()
+// PrefixesByAsPathRegex walks the entire RIB and returns all routes whose AS path
+// matches the given regular expression.
+func (r *IPv4Rib) PrefixesByAsPathRegex(re *regexp.Regexp) (results []Route) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	for i := 0; i < 256; i++ {
-		if r.ipv4Root[i] != nil {
+		if r.root[i] != nil {
 			var addr [4]byte
 			addr[0] = byte(i)
-			collectByAsPathRegexV4(r.ipv4Root[i], re, addr, 8, &v4)
+			collectByAsPathRegexV4(r.root[i], re, addr, 8, &results)
 		}
 	}
-	r.v4mu.RUnlock()
+	return results
+}
 
-	// Walk IPv6 trie
-	r.v6mu.RLock()
+// PrefixesByAsPathRegex walks the entire RIB and returns all routes whose AS path
+// matches the given regular expression.
+func (r *IPv6Rib) PrefixesByAsPathRegex(re *regexp.Regexp) (results []Route) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	for i := 0; i < 32; i++ {
-		if r.ipv6Root[i] != nil {
+		if r.root[i] != nil {
 			var addr [16]byte
 			addr[0] = byte(i + 0x20)
-			collectByAsPathRegexV6(r.ipv6Root[i], re, addr, 8, &v6)
+			collectByAsPathRegexV6(r.root[i], re, addr, 8, &results)
 		}
 	}
-	r.v6mu.RUnlock()
-
-	return v4, v6
+	return results
 }
 
-// collectByAsPathRegexV4 recursively walks the IPv4 trie, reconstructing the prefix
-// address and matching the AS path against a regex.
-func collectByAsPathRegexV4(n *node, re *regexp.Regexp, addr [4]byte, depth int, results *[]Route) {
-	for id, attr := range n.paths {
-		if re.MatchString(attr.ASPathString()) {
-			ip := netip.AddrFrom4(addr)
-			*results = append(*results, Route{
-				Prefix:     netip.PrefixFrom(ip, depth),
-				Attributes: attr,
-				PathID:     id,
-			})
-		}
-	}
-
-	if depth >= 24 {
-		return
-	}
-
-	for bit := 0; bit < 2; bit++ {
-		if n.children[bit] != nil {
-			nextAddr := addr
-			byteIdx := depth / 8
-			bitPos := uint(7 - (depth % 8))
-			if bit == 1 {
-				nextAddr[byteIdx] |= 1 << bitPos
-			}
-			collectByAsPathRegexV4(n.children[bit], re, nextAddr, depth+1, results)
-		}
-	}
-}
-
-// collectByAsPathRegexV6 recursively walks the IPv6 trie, reconstructing the prefix
-// address and matching the AS path against a regex.
-func collectByAsPathRegexV6(n *node, re *regexp.Regexp, addr [16]byte, depth int, results *[]Route) {
-	for id, attr := range n.paths {
-		if re.MatchString(attr.ASPathString()) {
-			ip := netip.AddrFrom16(addr)
-			*results = append(*results, Route{
-				Prefix:     netip.PrefixFrom(ip, depth),
-				Attributes: attr,
-				PathID:     id,
-			})
-		}
-	}
-
-	if depth >= 48 {
-		return
-	}
-
-	for bit := 0; bit < 2; bit++ {
-		if n.children[bit] != nil {
-			nextAddr := addr
-			byteIdx := depth / 8
-			bitPos := uint(7 - (depth % 8))
-			if bit == 1 {
-				nextAddr[byteIdx] |= 1 << bitPos
-			}
-			collectByAsPathRegexV6(n.children[bit], re, nextAddr, depth+1, results)
-		}
-	}
-}
-
-// AllPrefixesIPv4 returns all IPv4 prefixes currently in the RIB.
-func (r *Rib) AllPrefixesIPv4() []netip.Prefix {
-	if r.v4mu == nil {
+// AllPrefixes returns all IPv4 prefixes currently in the RIB.
+func (r *IPv4Rib) AllPrefixes() []netip.Prefix {
+	if r.mu == nil {
 		return nil
 	}
 	var prefixes []netip.Prefix
-	r.v4mu.RLock()
-	defer r.v4mu.RUnlock()
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 
 	for i := 0; i < 256; i++ {
-		if r.ipv4Root[i] != nil {
+		if r.root[i] != nil {
 			var addr [4]byte
 			addr[0] = byte(i)
-			collectPrefixesV4(r.ipv4Root[i], addr, 8, &prefixes)
+			collectPrefixesV4(r.root[i], addr, 8, &prefixes)
 		}
 	}
 	return prefixes
 }
 
-// AllPrefixesIPv6 returns all IPv6 prefixes currently in the RIB.
-func (r *Rib) AllPrefixesIPv6() []netip.Prefix {
-	if r.v6mu == nil {
+// AllPrefixes returns all IPv6 prefixes currently in the RIB.
+func (r *IPv6Rib) AllPrefixes() []netip.Prefix {
+	if r.mu == nil {
 		return nil
 	}
 	var prefixes []netip.Prefix
-	r.v6mu.RLock()
-	defer r.v6mu.RUnlock()
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 
 	for i := 0; i < 32; i++ {
-		if r.ipv6Root[i] != nil {
+		if r.root[i] != nil {
 			var addr [16]byte
 			addr[0] = byte(i + 0x20)
-			collectPrefixesV6(r.ipv6Root[i], addr, 8, &prefixes)
+			collectPrefixesV6(r.root[i], addr, 8, &prefixes)
 		}
 	}
 	return prefixes
@@ -1583,4 +1499,116 @@ func (ra *RouteAttributes) ASPathString() string {
 		parts[i] = strconv.FormatUint(uint64(asn), 10)
 	}
 	return strings.Join(parts, " ")
+}
+
+func collectByOriginV4(n *node, asn uint32, addr [4]byte, depth int, results *[]Route) {
+	for pathID, attrs := range n.paths {
+		if len(attrs.AsPath) > 0 && attrs.AsPath[len(attrs.AsPath)-1] == asn {
+			*results = append(*results, Route{
+				Prefix:     netip.PrefixFrom(netip.AddrFrom4(addr), depth),
+				Attributes: attrs,
+				PathID:     pathID,
+			})
+		}
+	}
+
+	if depth >= 24 {
+		return
+	}
+
+	for bit := 0; bit < 2; bit++ {
+		if n.children[bit] != nil {
+			nextAddr := addr
+			byteIdx := depth / 8
+			bitPos := uint(7 - (depth % 8))
+			if bit == 1 {
+				nextAddr[byteIdx] |= 1 << bitPos
+			}
+			collectByOriginV4(n.children[bit], asn, nextAddr, depth+1, results)
+		}
+	}
+}
+
+func collectByOriginV6(n *node, asn uint32, addr [16]byte, depth int, results *[]Route) {
+	for pathID, attrs := range n.paths {
+		if len(attrs.AsPath) > 0 && attrs.AsPath[len(attrs.AsPath)-1] == asn {
+			*results = append(*results, Route{
+				Prefix:     netip.PrefixFrom(netip.AddrFrom16(addr), depth),
+				Attributes: attrs,
+				PathID:     pathID,
+			})
+		}
+	}
+
+	if depth >= 48 {
+		return
+	}
+
+	for bit := 0; bit < 2; bit++ {
+		if n.children[bit] != nil {
+			nextAddr := addr
+			byteIdx := depth / 8
+			bitPos := uint(7 - (depth % 8))
+			if bit == 1 {
+				nextAddr[byteIdx] |= 1 << bitPos
+			}
+			collectByOriginV6(n.children[bit], asn, nextAddr, depth+1, results)
+		}
+	}
+}
+
+func collectByAsPathRegexV4(n *node, re *regexp.Regexp, addr [4]byte, depth int, results *[]Route) {
+	for pathID, attrs := range n.paths {
+		if re.MatchString(attrs.ASPathString()) {
+			*results = append(*results, Route{
+				Prefix:     netip.PrefixFrom(netip.AddrFrom4(addr), depth),
+				Attributes: attrs,
+				PathID:     pathID,
+			})
+		}
+	}
+
+	if depth >= 24 {
+		return
+	}
+
+	for bit := 0; bit < 2; bit++ {
+		if n.children[bit] != nil {
+			nextAddr := addr
+			byteIdx := depth / 8
+			bitPos := uint(7 - (depth % 8))
+			if bit == 1 {
+				nextAddr[byteIdx] |= 1 << bitPos
+			}
+			collectByAsPathRegexV4(n.children[bit], re, nextAddr, depth+1, results)
+		}
+	}
+}
+
+func collectByAsPathRegexV6(n *node, re *regexp.Regexp, addr [16]byte, depth int, results *[]Route) {
+	for pathID, attrs := range n.paths {
+		if re.MatchString(attrs.ASPathString()) {
+			*results = append(*results, Route{
+				Prefix:     netip.PrefixFrom(netip.AddrFrom16(addr), depth),
+				Attributes: attrs,
+				PathID:     pathID,
+			})
+		}
+	}
+
+	if depth >= 48 {
+		return
+	}
+
+	for bit := 0; bit < 2; bit++ {
+		if n.children[bit] != nil {
+			nextAddr := addr
+			byteIdx := depth / 8
+			bitPos := uint(7 - (depth % 8))
+			if bit == 1 {
+				nextAddr[byteIdx] |= 1 << bitPos
+			}
+			collectByAsPathRegexV6(n.children[bit], re, nextAddr, depth+1, results)
+		}
+	}
 }
