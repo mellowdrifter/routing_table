@@ -6,7 +6,7 @@ import (
 
 // attrTable manages deduplication of RouteAttributes.
 type attrTable struct {
-	mu      sync.Mutex
+	mu      sync.RWMutex
 	entries map[uint64][]*RouteAttributes
 
 	attrCount  uint64
@@ -19,33 +19,49 @@ func newAttrTable() *attrTable {
 	}
 }
 
+// Len returns the number of hash buckets in the attribute table.
+func (at *attrTable) Len() int {
+	at.mu.RLock()
+	defer at.mu.RUnlock()
+	return len(at.entries)
+}
+
 // fnv-1a 64-bit hash
 func hashAttributes(attr *RouteAttributes) uint64 {
 	if attr == nil {
 		return 0
 	}
 	var h uint64 = 14695981039346656037
-	// Hash AsPath
+	const prime = 1099511628211
+
+	// Mix in length as domain separator before each slice
+	h ^= uint64(len(attr.AsPath))
+	h *= prime
 	for _, v := range attr.AsPath {
 		h ^= uint64(v)
-		h *= 1099511628211
+		h *= prime
 	}
-	// Hash Communities
+
+	h ^= uint64(len(attr.Communities))
+	h *= prime
 	for _, v := range attr.Communities {
 		h ^= uint64(v)
-		h *= 1099511628211
+		h *= prime
 	}
-	// Hash LargeCommunities
+
+	h ^= uint64(len(attr.LargeCommunities))
+	h *= prime
 	for _, lc := range attr.LargeCommunities {
 		h ^= uint64(lc.GlobalAdmin)
-		h *= 1099511628211
+		h *= prime
 		h ^= uint64(lc.LocalData1)
-		h *= 1099511628211
+		h *= prime
 		h ^= uint64(lc.LocalData2)
-		h *= 1099511628211
+		h *= prime
 	}
+
 	h ^= uint64(attr.LocalPref)
-	h *= 1099511628211
+	h *= prime
 	return h
 }
 
@@ -152,7 +168,7 @@ func (at *attrTable) release(attr *RouteAttributes) {
 
 // GetStats returns the current number of unique attributes and the bytes used by their slices
 func (at *attrTable) GetStats() (uint64, uint64) {
-	at.mu.Lock()
-	defer at.mu.Unlock()
+	at.mu.RLock()
+	defer at.mu.RUnlock()
 	return at.attrCount, at.sliceBytes
 }

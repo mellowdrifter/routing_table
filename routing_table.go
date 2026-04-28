@@ -299,6 +299,16 @@ func (r *IPv6Rib) Count() int {
 	return r.count
 }
 
+// AttributeCount returns the number of unique attribute buckets.
+func (r *IPv4Rib) AttributeCount() int {
+	return r.attrTable.Len()
+}
+
+// AttributeCount returns the number of unique attribute buckets.
+func (r *IPv6Rib) AttributeCount() int {
+	return r.attrTable.Len()
+}
+
 // PathCount returns the total number of paths in the RIB.
 func (r *IPv4Rib) PathCount() int {
 	if r.mu == nil {
