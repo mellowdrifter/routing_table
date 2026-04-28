@@ -390,9 +390,7 @@ func (r *IPv4Rib) insertUnlocked(route Route) bool {
 
 	// Direct array lookup by first octet — creates the entry node on first use.
 	if r.root[addr[0]] == nil {
-		r.root[addr[0]] = &node{
-			paths: make(map[uint32]*RouteAttributes),
-		}
+		r.root[addr[0]] = &node{}
 		r.nodeCount++
 	}
 	currentNode := r.root[addr[0]]
@@ -404,6 +402,9 @@ func (r *IPv4Rib) insertUnlocked(route Route) bool {
 			r.count++
 			r.masks[mask]++
 			isNew = true
+		}
+		if currentNode.paths == nil {
+			currentNode.paths = make(map[uint32]*RouteAttributes)
 		}
 		if oldAttr, ok := currentNode.paths[route.PathID]; ok {
 			r.attrTable.release(oldAttr)
@@ -422,7 +423,6 @@ func (r *IPv4Rib) insertUnlocked(route Route) bool {
 			if currentNode.children[bit] == nil {
 				currentNode.children[bit] = &node{
 					parent: currentNode,
-					paths:  make(map[uint32]*RouteAttributes),
 				}
 				r.nodeCount++
 			}
@@ -433,6 +433,9 @@ func (r *IPv4Rib) insertUnlocked(route Route) bool {
 					r.count++
 					r.masks[mask]++
 					isNew = true
+				}
+				if currentNode.paths == nil {
+					currentNode.paths = make(map[uint32]*RouteAttributes)
 				}
 				if oldAttr, ok := currentNode.paths[route.PathID]; ok {
 					r.attrTable.release(oldAttr)
@@ -497,9 +500,7 @@ func (r *IPv6Rib) insertUnlocked(route Route) bool {
 	// Map the first byte to array index 0–31 by subtracting 0x20.
 	idx := addr[0] - 0x20
 	if r.root[idx] == nil {
-		r.root[idx] = &node{
-			paths: make(map[uint32]*RouteAttributes),
-		}
+		r.root[idx] = &node{}
 		r.nodeCount++
 	}
 	currentNode := r.root[idx]
@@ -511,6 +512,9 @@ func (r *IPv6Rib) insertUnlocked(route Route) bool {
 			r.count++
 			r.masks[mask]++
 			isNew = true
+		}
+		if currentNode.paths == nil {
+			currentNode.paths = make(map[uint32]*RouteAttributes)
 		}
 		if oldAttr, ok := currentNode.paths[route.PathID]; ok {
 			r.attrTable.release(oldAttr)
@@ -529,7 +533,6 @@ func (r *IPv6Rib) insertUnlocked(route Route) bool {
 			if currentNode.children[bit] == nil {
 				currentNode.children[bit] = &node{
 					parent: currentNode,
-					paths:  make(map[uint32]*RouteAttributes),
 				}
 				r.nodeCount++
 			}
@@ -540,6 +543,9 @@ func (r *IPv6Rib) insertUnlocked(route Route) bool {
 					r.count++
 					r.masks[mask]++
 					isNew = true
+				}
+				if currentNode.paths == nil {
+					currentNode.paths = make(map[uint32]*RouteAttributes)
 				}
 				if oldAttr, ok := currentNode.paths[route.PathID]; ok {
 					r.attrTable.release(oldAttr)
