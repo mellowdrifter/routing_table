@@ -102,8 +102,14 @@ type node struct {
 
 // bestPath returns the "best" path from the node's paths map using deterministic rules.
 func (n *node) bestPath() *RouteAttributes {
+	attr, _ := n.bestPathWithID()
+	return attr
+}
+
+// bestPathWithID returns the best path and its ID.
+func (n *node) bestPathWithID() (*RouteAttributes, uint32) {
 	if len(n.paths) == 0 {
-		return nil
+		return nil, 0
 	}
 	var bestAttr *RouteAttributes
 	var bestPathID uint32
@@ -117,13 +123,22 @@ func (n *node) bestPath() *RouteAttributes {
 			continue
 		}
 
-		// 1. Higher LocalPref
-		if attr.LocalPref > bestAttr.LocalPref {
+		// 1. Higher LocalPref (0 = 100 default)
+		lp1 := attr.LocalPref
+		if lp1 == 0 {
+			lp1 = 100
+		}
+		lp2 := bestAttr.LocalPref
+		if lp2 == 0 {
+			lp2 = 100
+		}
+
+		if lp1 > lp2 {
 			bestAttr = attr
 			bestPathID = pathID
 			continue
 		}
-		if attr.LocalPref < bestAttr.LocalPref {
+		if lp1 < lp2 {
 			continue
 		}
 
@@ -143,7 +158,7 @@ func (n *node) bestPath() *RouteAttributes {
 			bestPathID = pathID
 		}
 	}
-	return bestAttr
+	return bestAttr, bestPathID
 }
 
 // SelectBest returns the best route from a slice of candidate routes using deterministic BGP selection rules.
@@ -162,12 +177,21 @@ func SelectBest(routes []Route) *Route {
 			continue
 		}
 
-		// 1. Higher LocalPref
-		if curr.Attributes.LocalPref > best.Attributes.LocalPref {
+		// 1. Higher LocalPref (0 = 100 default)
+		lp1 := curr.Attributes.LocalPref
+		if lp1 == 0 {
+			lp1 = 100
+		}
+		lp2 := best.Attributes.LocalPref
+		if lp2 == 0 {
+			lp2 = 100
+		}
+
+		if lp1 > lp2 {
 			best = curr
 			continue
 		}
-		if curr.Attributes.LocalPref < best.Attributes.LocalPref {
+		if lp1 < lp2 {
 			continue
 		}
 
@@ -1027,10 +1051,11 @@ func (r *IPv4Rib) Lookup(prefix netip.Prefix) *Route {
 
 	// A /8 prefix is stored directly on the array entry node.
 	if mask == 8 {
-		if attr := currentNode.bestPath(); attr != nil {
+		if attr, pathID := currentNode.bestPathWithID(); attr != nil {
 			return &Route{
 				Prefix:     prefix.Masked(),
 				Attributes: attr,
+				PathID:     pathID,
 			}
 		}
 		return nil
@@ -1046,10 +1071,11 @@ func (r *IPv4Rib) Lookup(prefix netip.Prefix) *Route {
 			}
 			currentNode = currentNode.children[bit]
 			if bitCount == mask {
-				if attr := currentNode.bestPath(); attr != nil {
+				if attr, pathID := currentNode.bestPathWithID(); attr != nil {
 					return &Route{
 						Prefix:     prefix.Masked(),
 						Attributes: attr,
+						PathID:     pathID,
 					}
 				}
 				return nil
@@ -1083,10 +1109,11 @@ func (r *IPv6Rib) Lookup(prefix netip.Prefix) *Route {
 
 	// A /8 prefix is stored directly on the array entry node.
 	if mask == 8 {
-		if attr := currentNode.bestPath(); attr != nil {
+		if attr, pathID := currentNode.bestPathWithID(); attr != nil {
 			return &Route{
 				Prefix:     prefix.Masked(),
 				Attributes: attr,
+				PathID:     pathID,
 			}
 		}
 		return nil
@@ -1102,10 +1129,11 @@ func (r *IPv6Rib) Lookup(prefix netip.Prefix) *Route {
 			}
 			currentNode = currentNode.children[bit]
 			if bitCount == mask {
-				if attr := currentNode.bestPath(); attr != nil {
+				if attr, pathID := currentNode.bestPathWithID(); attr != nil {
 					return &Route{
 						Prefix:     prefix.Masked(),
 						Attributes: attr,
+						PathID:     pathID,
 					}
 				}
 				return nil

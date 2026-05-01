@@ -1108,3 +1108,49 @@ func TestPrefixesByOriginASN(t *testing.T) {
 	}
 }
 
+
+func TestLocalPrefDefaulting(t *testing.T) {
+router := rib.NewIPv4Rib()
+prefix := netip.MustParsePrefix("1.1.1.0/24")
+
+// 1. Path with LP 50 (worse than default 100)
+router.Insert(rib.Route{
+Prefix: prefix,
+PathID: 1,
+Attributes: &rib.RouteAttributes{
+LocalPref: 50,
+},
+})
+
+// 2. Path with LP 0 (defaults to 100)
+router.Insert(rib.Route{
+Prefix: prefix,
+PathID: 2,
+Attributes: &rib.RouteAttributes{
+LocalPref: 0,
+},
+})
+
+// Best path should be PathID 2 (100 > 50)
+lpm := router.Lookup(prefix)
+if lpm == nil {
+t.Fatal("expected route")
+}
+if lpm.PathID != 2 {
+t.Errorf("expected PathID 2 (LP 100 via default), got %d", lpm.PathID)
+}
+
+// 3. Path with explicit LP 150 (beats default 100)
+router.Insert(rib.Route{
+Prefix: prefix,
+PathID: 3,
+Attributes: &rib.RouteAttributes{
+LocalPref: 150,
+},
+})
+
+lpm = router.Lookup(prefix)
+if lpm.PathID != 3 {
+t.Errorf("expected PathID 3 (LP 150), got %d", lpm.PathID)
+}
+}
