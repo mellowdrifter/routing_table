@@ -1628,3 +1628,187 @@ func collectByAsPathRegexV6(n *node, re *regexp.Regexp, addr [16]byte, depth int
 		}
 	}
 }
+
+// PrefixesByCommunity walks the entire RIB and returns all routes that carry
+// the specified standard community.
+func (r *IPv4Rib) PrefixesByCommunity(comm uint32) (results []Route) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	for i := 0; i < 256; i++ {
+		if r.root[i] != nil {
+			var addr [4]byte
+			addr[0] = byte(i)
+			collectByCommunityV4(r.root[i], comm, addr, 8, &results)
+		}
+	}
+	return results
+}
+
+func collectByCommunityV4(n *node, comm uint32, addr [4]byte, depth int, results *[]Route) {
+	for pathID, attrs := range n.paths {
+		for _, c := range attrs.Communities {
+			if c == comm {
+				*results = append(*results, Route{
+					Prefix:     netip.PrefixFrom(netip.AddrFrom4(addr), depth),
+					Attributes: attrs,
+					PathID:     pathID,
+				})
+				break
+			}
+		}
+	}
+
+	if depth >= 24 {
+		return
+	}
+
+	for bit := 0; bit < 2; bit++ {
+		if n.children[bit] != nil {
+			nextAddr := addr
+			byteIdx := depth / 8
+			bitPos := uint(7 - (depth % 8))
+			if bit == 1 {
+				nextAddr[byteIdx] |= 1 << bitPos
+			}
+			collectByCommunityV4(n.children[bit], comm, nextAddr, depth+1, results)
+		}
+	}
+}
+
+// PrefixesByCommunity walks the entire RIB and returns all routes that carry
+// the specified standard community.
+func (r *IPv6Rib) PrefixesByCommunity(comm uint32) (results []Route) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	for i := 0; i < 32; i++ {
+		if r.root[i] != nil {
+			var addr [16]byte
+			addr[0] = byte(i + 0x20)
+			collectByCommunityV6(r.root[i], comm, addr, 8, &results)
+		}
+	}
+	return results
+}
+
+func collectByCommunityV6(n *node, comm uint32, addr [16]byte, depth int, results *[]Route) {
+	for pathID, attrs := range n.paths {
+		for _, c := range attrs.Communities {
+			if c == comm {
+				*results = append(*results, Route{
+					Prefix:     netip.PrefixFrom(netip.AddrFrom16(addr), depth),
+					Attributes: attrs,
+					PathID:     pathID,
+				})
+				break
+			}
+		}
+	}
+
+	if depth >= 48 {
+		return
+	}
+
+	for bit := 0; bit < 2; bit++ {
+		if n.children[bit] != nil {
+			nextAddr := addr
+			byteIdx := depth / 8
+			bitPos := uint(7 - (depth % 8))
+			if bit == 1 {
+				nextAddr[byteIdx] |= 1 << bitPos
+			}
+			collectByCommunityV6(n.children[bit], comm, nextAddr, depth+1, results)
+		}
+	}
+}
+
+// PrefixesByLargeCommunity walks the entire RIB and returns all routes that carry
+// the specified large community.
+func (r *IPv4Rib) PrefixesByLargeCommunity(lc LargeCommunity) (results []Route) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	for i := 0; i < 256; i++ {
+		if r.root[i] != nil {
+			var addr [4]byte
+			addr[0] = byte(i)
+			collectByLargeCommunityV4(r.root[i], lc, addr, 8, &results)
+		}
+	}
+	return results
+}
+
+func collectByLargeCommunityV4(n *node, lc LargeCommunity, addr [4]byte, depth int, results *[]Route) {
+	for pathID, attrs := range n.paths {
+		for _, c := range attrs.LargeCommunities {
+			if c.GlobalAdmin == lc.GlobalAdmin && c.LocalData1 == lc.LocalData1 && c.LocalData2 == lc.LocalData2 {
+				*results = append(*results, Route{
+					Prefix:     netip.PrefixFrom(netip.AddrFrom4(addr), depth),
+					Attributes: attrs,
+					PathID:     pathID,
+				})
+				break
+			}
+		}
+	}
+
+	if depth >= 24 {
+		return
+	}
+
+	for bit := 0; bit < 2; bit++ {
+		if n.children[bit] != nil {
+			nextAddr := addr
+			byteIdx := depth / 8
+			bitPos := uint(7 - (depth % 8))
+			if bit == 1 {
+				nextAddr[byteIdx] |= 1 << bitPos
+			}
+			collectByLargeCommunityV4(n.children[bit], lc, nextAddr, depth+1, results)
+		}
+	}
+}
+
+// PrefixesByLargeCommunity walks the entire RIB and returns all routes that carry
+// the specified large community.
+func (r *IPv6Rib) PrefixesByLargeCommunity(lc LargeCommunity) (results []Route) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	for i := 0; i < 32; i++ {
+		if r.root[i] != nil {
+			var addr [16]byte
+			addr[0] = byte(i + 0x20)
+			collectByLargeCommunityV6(r.root[i], lc, addr, 8, &results)
+		}
+	}
+	return results
+}
+
+func collectByLargeCommunityV6(n *node, lc LargeCommunity, addr [16]byte, depth int, results *[]Route) {
+	for pathID, attrs := range n.paths {
+		for _, c := range attrs.LargeCommunities {
+			if c.GlobalAdmin == lc.GlobalAdmin && c.LocalData1 == lc.LocalData1 && c.LocalData2 == lc.LocalData2 {
+				*results = append(*results, Route{
+					Prefix:     netip.PrefixFrom(netip.AddrFrom16(addr), depth),
+					Attributes: attrs,
+					PathID:     pathID,
+				})
+				break
+			}
+		}
+	}
+
+	if depth >= 48 {
+		return
+	}
+
+	for bit := 0; bit < 2; bit++ {
+		if n.children[bit] != nil {
+			nextAddr := addr
+			byteIdx := depth / 8
+			bitPos := uint(7 - (depth % 8))
+			if bit == 1 {
+				nextAddr[byteIdx] |= 1 << bitPos
+			}
+			collectByLargeCommunityV6(n.children[bit], lc, nextAddr, depth+1, results)
+		}
+	}
+}
