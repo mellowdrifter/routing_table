@@ -12,7 +12,6 @@ import (
 	"time"
 )
 
-
 // IPv4Rib represents an IPv4 Routing Information Base.
 type IPv4Rib struct {
 	mu *sync.RWMutex
@@ -66,9 +65,9 @@ type RouteAttributes struct {
 	LargeCommunities []LargeCommunity
 
 	// Internal fields for deduplication and garbage collection
-	hash      uint64
-	LocalPref uint32
-	refCount  uint32
+	hash       uint64
+	LocalPref  uint32
+	refCount   uint32
 }
 
 // Route represents an entry in the RIB.
@@ -76,6 +75,7 @@ type Route struct {
 	Prefix     netip.Prefix
 	Attributes *RouteAttributes
 	PathID     uint32 // 0 for non-add-path routes
+	Stale      bool   // populated from node-level stale tracking
 }
 
 // PrefixWithID is used for batch deletions in Add-Path sessions.
@@ -98,6 +98,14 @@ type node struct {
 	children [2]*node
 	paths    map[uint32]*RouteAttributes // pathID -> attrs; pathID 0 = non-add-path
 	parent   *node
+	stale    map[uint32]bool             // pathID -> stale; nil when no GR active
+}
+
+func (n *node) isStale(pathID uint32) bool {
+	if n.stale == nil {
+		return false
+	}
+	return n.stale[pathID]
 }
 
 // bestPath returns the "best" path from the node's paths map using deterministic rules.
@@ -233,6 +241,45 @@ func NewIPv6Rib() *IPv6Rib {
 		masks:     make(map[int]int),
 	}
 }
+
+// MarkAllStale marks all routes in the IPv4 RIB as stale.
+func (r *IPv4Rib) MarkAllStale() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, n := range r.root {
+		if n != nil {
+			markNodeStale(n)
+		}
+	}
+}
+
+// MarkAllStale marks all routes in the IPv6 RIB as stale.
+func (r *IPv6Rib) MarkAllStale() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, n := range r.root {
+		if n != nil {
+			markNodeStale(n)
+		}
+	}
+}
+
+func markNodeStale(n *node) {
+	if len(n.paths) > 0 {
+		if n.stale == nil {
+			n.stale = make(map[uint32]bool, len(n.paths))
+		}
+		for pathID := range n.paths {
+			n.stale[pathID] = true
+		}
+	}
+	for _, child := range n.children {
+		if child != nil {
+			markNodeStale(child)
+		}
+	}
+}
+
 
 // Reset atomically flushes the entire routing table and resets all counters.
 func (r *IPv4Rib) Reset() {
@@ -411,9 +458,9 @@ func (r *IPv4Rib) InsertBatch(routes []Route) []netip.Prefix {
 func (r *IPv4Rib) insertUnlocked(route Route) bool {
 	mask := route.Prefix.Bits()
 
-	// Guard: no internet IPv4 prefix is shorter than /8 or longer than /24.
-	if mask < 8 || mask > 24 {
-		log.Printf("rejecting IPv4 prefix %s: mask /%d is outside allowed range /8–/24", route.Prefix, mask)
+	// Guard: no internet IPv4 prefix is shorter than /8 or longer than /32.
+	if mask < 8 || mask > 32 {
+		log.Printf("rejecting IPv4 prefix %s: mask /%d is outside allowed range /8–/32", route.Prefix, mask)
 		return false
 	}
 
@@ -446,6 +493,12 @@ func (r *IPv4Rib) insertUnlocked(route Route) bool {
 			r.pathCount++
 		}
 		currentNode.paths[route.PathID] = dedupAttr
+		if currentNode.stale != nil {
+			delete(currentNode.stale, route.PathID)
+			if len(currentNode.stale) == 0 {
+				currentNode.stale = nil
+			}
+		}
 		return isNew
 	}
 
@@ -477,6 +530,12 @@ func (r *IPv4Rib) insertUnlocked(route Route) bool {
 					r.pathCount++
 				}
 				currentNode.paths[route.PathID] = dedupAttr
+				if currentNode.stale != nil {
+					delete(currentNode.stale, route.PathID)
+					if len(currentNode.stale) == 0 {
+						currentNode.stale = nil
+					}
+				}
 				return isNew
 			}
 			bitCount++
@@ -522,9 +581,9 @@ func (r *IPv6Rib) insertUnlocked(route Route) bool {
 		return false
 	}
 
-	// Guard: no internet IPv6 prefix is shorter than /8 or longer than /48.
-	if mask < 8 || mask > 48 {
-		log.Printf("rejecting IPv6 prefix %s: mask /%d is outside allowed range /8–/48", route.Prefix, mask)
+	// Guard: no internet IPv6 prefix is shorter than /8 or longer than /128.
+	if mask < 8 || mask > 128 {
+		log.Printf("rejecting IPv6 prefix %s: mask /%d is outside allowed range /8–/128", route.Prefix, mask)
 		return false
 	}
 
@@ -556,6 +615,12 @@ func (r *IPv6Rib) insertUnlocked(route Route) bool {
 			r.pathCount++
 		}
 		currentNode.paths[route.PathID] = dedupAttr
+		if currentNode.stale != nil {
+			delete(currentNode.stale, route.PathID)
+			if len(currentNode.stale) == 0 {
+				currentNode.stale = nil
+			}
+		}
 		return isNew
 	}
 
@@ -587,6 +652,12 @@ func (r *IPv6Rib) insertUnlocked(route Route) bool {
 					r.pathCount++
 				}
 				currentNode.paths[route.PathID] = dedupAttr
+				if currentNode.stale != nil {
+					delete(currentNode.stale, route.PathID)
+					if len(currentNode.stale) == 0 {
+						currentNode.stale = nil
+					}
+				}
 				return isNew
 			}
 			bitCount++
@@ -802,6 +873,126 @@ func (r *IPv6Rib) deleteUnlocked(prefix netip.Prefix, pathID uint32) bool {
 	return false
 }
 
+// DeleteStaleRoutes removes all stale paths from the RIB.
+// Returns a slice of prefixes that were completely removed from the RIB (went from 1 to 0 paths).
+func (r *IPv4Rib) DeleteStaleRoutes() []netip.Prefix {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	var removed []netip.Prefix
+	for i, n := range r.root {
+		if n != nil {
+			ipBytes := make([]byte, 4)
+			ipBytes[0] = byte(i)
+			r.deleteStaleFromNode(n, ipBytes, 8, &removed)
+
+			// Clean up root entry if empty
+			if r.root[i].children[0] == nil && r.root[i].children[1] == nil && len(r.root[i].paths) == 0 {
+				r.root[i] = nil
+				r.nodeCount--
+			}
+		}
+	}
+	return removed
+}
+
+func (r *IPv4Rib) deleteStaleFromNode(n *node, ipBytes []byte, depth int, removed *[]netip.Prefix) {
+	// children first
+	for bit := 0; bit < 2; bit++ {
+		if n.children[bit] != nil {
+			newIpBytes := make([]byte, len(ipBytes))
+			copy(newIpBytes, ipBytes)
+			byteIdx := depth / 8
+			bitIdx := 7 - (depth % 8)
+			if bit == 1 {
+				newIpBytes[byteIdx] |= (1 << bitIdx)
+			}
+			r.deleteStaleFromNode(n.children[bit], newIpBytes, depth+1, removed)
+		}
+	}
+
+	if n.stale != nil {
+		for pathID, stale := range n.stale {
+			if stale {
+				if attr, ok := n.paths[pathID]; ok {
+					r.attrTable.release(attr)
+					delete(n.paths, pathID)
+					r.pathCount--
+
+					if len(n.paths) == 0 {
+						r.count--
+						r.masks[depth]--
+						addr, _ := netip.AddrFromSlice(ipBytes)
+						*removed = append(*removed, netip.PrefixFrom(addr, depth))
+						r.nodeCount -= deleteNode(n)
+					}
+				}
+			}
+		}
+		n.stale = nil
+	}
+}
+
+// DeleteStaleRoutes removes all stale paths from the RIB.
+// Returns a slice of prefixes that were completely removed from the RIB (went from 1 to 0 paths).
+func (r *IPv6Rib) DeleteStaleRoutes() []netip.Prefix {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	var removed []netip.Prefix
+	for i, n := range r.root {
+		if n != nil {
+			ipBytes := make([]byte, 16)
+			ipBytes[0] = byte(i + 0x20)
+			r.deleteStaleFromNode(n, ipBytes, 8, &removed)
+
+			// Clean up root entry if empty
+			if r.root[i].children[0] == nil && r.root[i].children[1] == nil && len(r.root[i].paths) == 0 {
+				r.root[i] = nil
+				r.nodeCount--
+			}
+		}
+	}
+	return removed
+}
+
+func (r *IPv6Rib) deleteStaleFromNode(n *node, ipBytes []byte, depth int, removed *[]netip.Prefix) {
+	// children first
+	for bit := 0; bit < 2; bit++ {
+		if n.children[bit] != nil {
+			newIpBytes := make([]byte, len(ipBytes))
+			copy(newIpBytes, ipBytes)
+			byteIdx := depth / 8
+			bitIdx := 7 - (depth % 8)
+			if bit == 1 {
+				newIpBytes[byteIdx] |= (1 << bitIdx)
+			}
+			r.deleteStaleFromNode(n.children[bit], newIpBytes, depth+1, removed)
+		}
+	}
+
+	if n.stale != nil {
+		for pathID, stale := range n.stale {
+			if stale {
+				if attr, ok := n.paths[pathID]; ok {
+					r.attrTable.release(attr)
+					delete(n.paths, pathID)
+					r.pathCount--
+
+					if len(n.paths) == 0 {
+						r.count--
+						r.masks[depth]--
+						addr, _ := netip.AddrFromSlice(ipBytes)
+						*removed = append(*removed, netip.PrefixFrom(addr, depth))
+						r.nodeCount -= deleteNode(n)
+					}
+				}
+			}
+		}
+		n.stale = nil
+	}
+}
+
 // deleteNode recursively prunes empty leaf nodes upward through the trie.
 // A node is prunable only if it has no prefix and no children.
 // Recursion stops at array entry nodes (parent == nil), which are cleaned
@@ -835,6 +1026,8 @@ func (r *IPv4Rib) Search(ip netip.Addr) *Route {
 	defer r.mu.RUnlock()
 
 	var lpmAttr *RouteAttributes
+	var lpmNode *node
+	var lpmPathID uint32
 	var lpmLen int
 	addr := ip.As4()
 
@@ -845,8 +1038,10 @@ func (r *IPv4Rib) Search(ip netip.Addr) *Route {
 	currentNode := r.root[addr[0]]
 
 	// Check for a /8 match at the array entry node.
-	if attr := currentNode.bestPath(); attr != nil {
+	if attr, pathID := currentNode.bestPathWithID(); attr != nil {
 		lpmAttr = attr
+		lpmNode = currentNode
+		lpmPathID = pathID
 		lpmLen = 8
 	}
 
@@ -859,8 +1054,10 @@ v4walk:
 		for _, bit := range bits {
 			if currentNode.children[bit] != nil {
 				currentNode = currentNode.children[bit]
-				if attr := currentNode.bestPath(); attr != nil {
+				if attr, pathID := currentNode.bestPathWithID(); attr != nil {
 					lpmAttr = attr
+					lpmNode = currentNode
+					lpmPathID = pathID
 					lpmLen = bitCount
 				}
 			} else {
@@ -873,6 +1070,8 @@ v4walk:
 		return &Route{
 			Prefix:     netip.PrefixFrom(ip, lpmLen).Masked(),
 			Attributes: lpmAttr,
+			PathID:     lpmPathID,
+			Stale:      lpmNode.isStale(lpmPathID),
 		}
 	}
 	return nil
@@ -934,6 +1133,8 @@ func (r *IPv6Rib) Search(ip netip.Addr) *Route {
 	defer r.mu.RUnlock()
 
 	var lpmAttr *RouteAttributes
+	var lpmNode *node
+	var lpmPathID uint32
 	var lpmLen int
 	addr := ip.As16()
 
@@ -949,8 +1150,10 @@ func (r *IPv6Rib) Search(ip netip.Addr) *Route {
 	currentNode := r.root[idx]
 
 	// Check for a match at the array entry node (e.g., a /8 route).
-	if attr := currentNode.bestPath(); attr != nil {
+	if attr, pathID := currentNode.bestPathWithID(); attr != nil {
 		lpmAttr = attr
+		lpmNode = currentNode
+		lpmPathID = pathID
 		lpmLen = 8
 	}
 
@@ -962,8 +1165,10 @@ v6walk:
 		for _, bit := range bits {
 			if currentNode.children[bit] != nil {
 				currentNode = currentNode.children[bit]
-				if attr := currentNode.bestPath(); attr != nil {
+				if attr, pathID := currentNode.bestPathWithID(); attr != nil {
 					lpmAttr = attr
+					lpmNode = currentNode
+					lpmPathID = pathID
 					lpmLen = bitCount
 				}
 			} else {
@@ -976,6 +1181,8 @@ v6walk:
 		return &Route{
 			Prefix:     netip.PrefixFrom(ip, lpmLen).Masked(),
 			Attributes: lpmAttr,
+			PathID:     lpmPathID,
+			Stale:      lpmNode.isStale(lpmPathID),
 		}
 	}
 	return nil
@@ -1056,6 +1263,7 @@ func (r *IPv4Rib) Lookup(prefix netip.Prefix) *Route {
 				Prefix:     prefix.Masked(),
 				Attributes: attr,
 				PathID:     pathID,
+				Stale:      currentNode.isStale(pathID),
 			}
 		}
 		return nil
@@ -1076,6 +1284,7 @@ func (r *IPv4Rib) Lookup(prefix netip.Prefix) *Route {
 						Prefix:     prefix.Masked(),
 						Attributes: attr,
 						PathID:     pathID,
+						Stale:      currentNode.isStale(pathID),
 					}
 				}
 				return nil
@@ -1114,6 +1323,7 @@ func (r *IPv6Rib) Lookup(prefix netip.Prefix) *Route {
 				Prefix:     prefix.Masked(),
 				Attributes: attr,
 				PathID:     pathID,
+				Stale:      currentNode.isStale(pathID),
 			}
 		}
 		return nil
@@ -1134,6 +1344,7 @@ func (r *IPv6Rib) Lookup(prefix netip.Prefix) *Route {
 						Prefix:     prefix.Masked(),
 						Attributes: attr,
 						PathID:     pathID,
+						Stale:      currentNode.isStale(pathID),
 					}
 				}
 				return nil
@@ -1237,6 +1448,7 @@ func nodeToRoutes(n *node, p netip.Prefix) []Route {
 			Prefix:     p.Masked(),
 			Attributes: attr,
 			PathID:     id,
+			Stale:      n.isStale(id),
 		})
 	}
 	return routes
@@ -1552,6 +1764,7 @@ func collectByOriginV4(n *node, asn uint32, addr [4]byte, depth int, results *[]
 				Prefix:     netip.PrefixFrom(netip.AddrFrom4(addr), depth),
 				Attributes: attrs,
 				PathID:     pathID,
+				Stale:      n.isStale(pathID),
 			})
 		}
 	}
@@ -1580,6 +1793,7 @@ func collectByOriginV6(n *node, asn uint32, addr [16]byte, depth int, results *[
 				Prefix:     netip.PrefixFrom(netip.AddrFrom16(addr), depth),
 				Attributes: attrs,
 				PathID:     pathID,
+				Stale:      n.isStale(pathID),
 			})
 		}
 	}
@@ -1608,6 +1822,7 @@ func collectByAsPathRegexV4(n *node, re *regexp.Regexp, addr [4]byte, depth int,
 				Prefix:     netip.PrefixFrom(netip.AddrFrom4(addr), depth),
 				Attributes: attrs,
 				PathID:     pathID,
+				Stale:      n.isStale(pathID),
 			})
 		}
 	}
@@ -1636,6 +1851,7 @@ func collectByAsPathRegexV6(n *node, re *regexp.Regexp, addr [16]byte, depth int
 				Prefix:     netip.PrefixFrom(netip.AddrFrom16(addr), depth),
 				Attributes: attrs,
 				PathID:     pathID,
+				Stale:      n.isStale(pathID),
 			})
 		}
 	}
@@ -1680,6 +1896,7 @@ func collectByCommunityV4(n *node, comm uint32, addr [4]byte, depth int, results
 					Prefix:     netip.PrefixFrom(netip.AddrFrom4(addr), depth),
 					Attributes: attrs,
 					PathID:     pathID,
+					Stale:      n.isStale(pathID),
 				})
 				break
 			}
@@ -1726,6 +1943,7 @@ func collectByCommunityV6(n *node, comm uint32, addr [16]byte, depth int, result
 					Prefix:     netip.PrefixFrom(netip.AddrFrom16(addr), depth),
 					Attributes: attrs,
 					PathID:     pathID,
+					Stale:      n.isStale(pathID),
 				})
 				break
 			}
@@ -1772,6 +1990,7 @@ func collectByLargeCommunityV4(n *node, lc LargeCommunity, addr [4]byte, depth i
 					Prefix:     netip.PrefixFrom(netip.AddrFrom4(addr), depth),
 					Attributes: attrs,
 					PathID:     pathID,
+					Stale:      n.isStale(pathID),
 				})
 				break
 			}
@@ -1818,6 +2037,7 @@ func collectByLargeCommunityV6(n *node, lc LargeCommunity, addr [16]byte, depth 
 					Prefix:     netip.PrefixFrom(netip.AddrFrom16(addr), depth),
 					Attributes: attrs,
 					PathID:     pathID,
+					Stale:      n.isStale(pathID),
 				})
 				break
 			}
