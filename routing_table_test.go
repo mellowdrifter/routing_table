@@ -14,7 +14,7 @@ import (
 )
 
 func TestNewRibIPv4(t *testing.T) {
-	router := rib.NewIPv4Rib()
+	router := rib.NewIPv4Rib(nil)
 	routes := []string{"1.1.0.0/16", "1.1.0.0/24", "1.1.128.0/24", "1.1.1.0/24", "1.1.0.0/23", "1.0.0.0/8"}
 	for _, route := range routes {
 		router.Insert(rib.Route{Prefix: netip.MustParsePrefix(route)})
@@ -68,7 +68,7 @@ func TestNewRibIPv4(t *testing.T) {
 }
 
 func TestNewRibIPv6(t *testing.T) {
-	router := rib.NewIPv6Rib()
+	router := rib.NewIPv6Rib(nil)
 	routes := []string{"2600::/48", "2600:1::/48", "2600::/32", "2600::/33", "2700::/8"}
 	for _, route := range routes {
 		router.Insert(rib.Route{Prefix: netip.MustParsePrefix(route)})
@@ -125,7 +125,7 @@ func TestNewRibIPv6(t *testing.T) {
 }
 
 func TestDeleteIP(t *testing.T) {
-	router := rib.NewIPv4Rib()
+	router := rib.NewIPv4Rib(nil)
 	routes := []string{"1.1.0.0/16", "1.1.0.0/24"}
 	for _, route := range routes {
 		router.Insert(rib.Route{Prefix: netip.MustParsePrefix(route)})
@@ -152,7 +152,7 @@ func TestDeleteIP(t *testing.T) {
 }
 
 func TestDeleteLast(t *testing.T) {
-	router := rib.NewIPv4Rib()
+	router := rib.NewIPv4Rib(nil)
 	ip1 := netip.MustParsePrefix("1.1.1.0/24")
 	ip2 := netip.MustParsePrefix("1.1.2.0/24")
 	ip3 := netip.MustParsePrefix("1.1.0.0/16")
@@ -169,7 +169,7 @@ func TestDeleteLast(t *testing.T) {
 // TestDuplicateInsertIPv4 verifies that inserting the same prefix twice
 // doesn't double-count. In BGP, route refreshes can re-announce existing prefixes.
 func TestDuplicateInsertIPv4(t *testing.T) {
-	router := rib.NewIPv4Rib()
+	router := rib.NewIPv4Rib(nil)
 	prefix := netip.MustParsePrefix("10.0.0.0/8")
 
 	router.Insert(rib.Route{Prefix: prefix})
@@ -194,7 +194,7 @@ func TestDuplicateInsertIPv4(t *testing.T) {
 
 // TestDuplicateInsertIPv6 verifies idempotent insert for IPv6.
 func TestDuplicateInsertIPv6(t *testing.T) {
-	router := rib.NewIPv6Rib()
+	router := rib.NewIPv6Rib(nil)
 	prefix := netip.MustParsePrefix("2001:db8::/32")
 
 	router.Insert(rib.Route{Prefix: prefix})
@@ -218,8 +218,8 @@ func TestDuplicateInsertIPv6(t *testing.T) {
 // TestDeleteNonExistent verifies that deleting a prefix that was never inserted
 // is a no-op and doesn't corrupt counters.
 func TestDeleteNonExistent(t *testing.T) {
-	router4 := rib.NewIPv4Rib()
-	router6 := rib.NewIPv6Rib()
+	router4 := rib.NewIPv4Rib(nil)
+	router6 := rib.NewIPv6Rib(nil)
 
 	// Delete from a completely empty RIB — should not panic or corrupt state.
 	router4.Delete(netip.MustParsePrefix("11.0.0.0/8"), 0)
@@ -243,7 +243,7 @@ func TestDeleteNonExistent(t *testing.T) {
 // where the trie path exists (due to a longer prefix) but no prefix is stored
 // doesn't corrupt state. E.g., insert /24, try to delete /16 that was never added.
 func TestDeletePathExistsNoPrefixIPv4(t *testing.T) {
-	router := rib.NewIPv4Rib()
+	router := rib.NewIPv4Rib(nil)
 
 	router.Insert(rib.Route{Prefix: netip.MustParsePrefix("10.1.1.0/24")})
 
@@ -264,7 +264,7 @@ func TestDeletePathExistsNoPrefixIPv4(t *testing.T) {
 // TestDoubleDeleteIPv4 verifies that deleting the same prefix twice
 // is safe and idempotent.
 func TestDoubleDeleteIPv4(t *testing.T) {
-	router := rib.NewIPv4Rib()
+	router := rib.NewIPv4Rib(nil)
 
 	router.Insert(rib.Route{Prefix: netip.MustParsePrefix("10.0.0.0/8")})
 	router.Delete(netip.MustParsePrefix("10.0.0.0/8"), 0)
@@ -278,7 +278,7 @@ func TestDoubleDeleteIPv4(t *testing.T) {
 
 // TestDoubleDeleteIPv6 verifies that deleting the same IPv6 prefix twice is safe.
 func TestDoubleDeleteIPv6(t *testing.T) {
-	router := rib.NewIPv6Rib()
+	router := rib.NewIPv6Rib(nil)
 
 	router.Insert(rib.Route{Prefix: netip.MustParsePrefix("2001:db8::/32")})
 	router.Delete(netip.MustParsePrefix("2001:db8::/32"), 0)
@@ -293,8 +293,8 @@ func TestDoubleDeleteIPv6(t *testing.T) {
 // TestBoundaryPrefixLengths verifies correct behavior at the exact
 // boundary prefix lengths: /8 and /24 for IPv4, /8 and /48 for IPv6.
 func TestBoundaryPrefixLengths(t *testing.T) {
-	router4 := rib.NewIPv4Rib()
-	router6 := rib.NewIPv6Rib()
+	router4 := rib.NewIPv4Rib(nil)
+	router6 := rib.NewIPv6Rib(nil)
 
 	// IPv4 /8 — stored directly on the array entry node.
 	router4.Insert(rib.Route{Prefix: netip.MustParsePrefix("10.0.0.0/8")})
@@ -328,8 +328,8 @@ func TestBoundaryPrefixLengths(t *testing.T) {
 // TestSearchEmptyRib verifies that searching an empty RIB returns nil
 // without panicking.
 func TestSearchEmptyRib(t *testing.T) {
-	router4 := rib.NewIPv4Rib()
-	router6 := rib.NewIPv6Rib()
+	router4 := rib.NewIPv4Rib(nil)
+	router6 := rib.NewIPv6Rib(nil)
 
 	if lpm := router4.Search(netip.MustParseAddr("1.1.1.1")); lpm != nil {
 		t.Errorf("expected nil from empty RIB, got %s", lpm)
@@ -342,7 +342,7 @@ func TestSearchEmptyRib(t *testing.T) {
 // TestSearchAfterFullDelete verifies that searching returns nil after
 // all prefixes have been deleted, and that the trie is fully cleaned up.
 func TestSearchAfterFullDelete(t *testing.T) {
-	router := rib.NewIPv4Rib()
+	router := rib.NewIPv4Rib(nil)
 
 	prefixes := []string{"10.0.0.0/8", "10.1.0.0/16", "10.1.1.0/24"}
 	for _, p := range prefixes {
@@ -361,7 +361,7 @@ func TestSearchAfterFullDelete(t *testing.T) {
 // TestInsertDeleteReinsert verifies the full lifecycle: insert, delete, then
 // reinsert the same prefix. This simulates a BGP flap.
 func TestInsertDeleteReinsert(t *testing.T) {
-	router := rib.NewIPv4Rib()
+	router := rib.NewIPv4Rib(nil)
 	prefix := netip.MustParsePrefix("192.168.0.0/16")
 
 	// Insert
@@ -389,8 +389,8 @@ func TestInsertDeleteReinsert(t *testing.T) {
 // TestRejectPrefixShorterThan8 verifies that prefixes with mask < /8
 // are rejected for both IPv4 and IPv6.
 func TestRejectPrefixShorterThan8(t *testing.T) {
-	router4 := rib.NewIPv4Rib()
-	router6 := rib.NewIPv6Rib()
+	router4 := rib.NewIPv4Rib(nil)
+	router6 := rib.NewIPv6Rib(nil)
 
 	// These should all be silently rejected.
 	router4.Insert(rib.Route{Prefix: netip.MustParsePrefix("0.0.0.0/0")})
@@ -412,8 +412,8 @@ func TestRejectPrefixShorterThan8(t *testing.T) {
 // supported lengths (/24 for IPv4, /48 for IPv6) are rejected.
 // Previously these were silently dropped by the capped trie depth.
 func TestRejectPrefixTooLong(t *testing.T) {
-	router4 := rib.NewIPv4Rib()
-	router6 := rib.NewIPv6Rib()
+	router4 := rib.NewIPv4Rib(nil)
+	router6 := rib.NewIPv6Rib(nil)
 
 	router4.Insert(rib.Route{Prefix: netip.MustParsePrefix("10.1.1.0/25")})
 	router4.Insert(rib.Route{Prefix: netip.MustParsePrefix("10.1.1.1/32")})
@@ -438,7 +438,7 @@ func TestRejectPrefixTooLong(t *testing.T) {
 // TestRejectIPv6Outside2000 verifies that IPv6 prefixes outside 2000::/3
 // are rejected.
 func TestRejectIPv6Outside2000(t *testing.T) {
-	router := rib.NewIPv6Rib()
+	router := rib.NewIPv6Rib(nil)
 
 	// fc00::/7 is ULA, not global unicast.
 	router.Insert(rib.Route{Prefix: netip.MustParsePrefix("fc00::/8")})
@@ -456,7 +456,7 @@ func TestRejectIPv6Outside2000(t *testing.T) {
 // TestIPv6BoundaryFirstBytes verifies correct behavior at the edges of
 // the 2000::/3 range: first byte 0x20 (2000::) and 0x3F (3F00::).
 func TestIPv6BoundaryFirstBytes(t *testing.T) {
-	router := rib.NewIPv6Rib()
+	router := rib.NewIPv6Rib(nil)
 
 	// 0x20 = bottom of range
 	router.Insert(rib.Route{Prefix: netip.MustParsePrefix("2000::/12")})
@@ -482,7 +482,7 @@ func TestIPv6BoundaryFirstBytes(t *testing.T) {
 // of overlapping prefixes, and that deleting intermediate prefixes produces
 // correct fallback behavior.
 func TestOverlappingPrefixHierarchy(t *testing.T) {
-	router := rib.NewIPv4Rib()
+	router := rib.NewIPv4Rib(nil)
 
 	// Build a 4-level hierarchy.
 	router.Insert(rib.Route{Prefix: netip.MustParsePrefix("10.0.0.0/8")})
@@ -527,7 +527,7 @@ func TestOverlappingPrefixHierarchy(t *testing.T) {
 
 // TestDeleteIPv6WithFallback verifies correct LPM fallback after IPv6 deletes.
 func TestDeleteIPv6WithFallback(t *testing.T) {
-	router := rib.NewIPv6Rib()
+	router := rib.NewIPv6Rib(nil)
 
 	router.Insert(rib.Route{Prefix: netip.MustParsePrefix("2001:db8::/32")})
 	router.Insert(rib.Route{Prefix: netip.MustParsePrefix("2001:db8:1::/48")})
@@ -549,8 +549,8 @@ func TestDeleteIPv6WithFallback(t *testing.T) {
 // TestCrossAddressFamilyRejection verifies that passing an IPv6 address
 // to IPv4 functions (and vice versa) is safely rejected.
 func TestCrossAddressFamilyRejection(t *testing.T) {
-	router4 := rib.NewIPv4Rib()
-	router6 := rib.NewIPv6Rib()
+	router4 := rib.NewIPv4Rib(nil)
+	router6 := rib.NewIPv6Rib(nil)
 
 	// Insert IPv4 prefix via IPv6 RIB — Search should return nil.
 	router6.Insert(rib.Route{Prefix: netip.MustParsePrefix("10.0.0.0/8")})
@@ -578,7 +578,7 @@ func TestCrossAddressFamilyRejection(t *testing.T) {
 // TestAdjacentPrefixes verifies correct isolation between adjacent prefixes
 // that share a parent path but diverge at the last bit.
 func TestAdjacentPrefixes(t *testing.T) {
-	router := rib.NewIPv4Rib()
+	router := rib.NewIPv4Rib(nil)
 
 	// 10.1.0.0/24 and 10.1.1.0/24 are adjacent (differ only at bit 24).
 	router.Insert(rib.Route{Prefix: netip.MustParsePrefix("10.1.0.0/24")})
@@ -609,7 +609,7 @@ func TestAdjacentPrefixes(t *testing.T) {
 // TestDeleteSlash8WithChildren verifies that deleting a /8 prefix when
 // longer prefixes exist under it does NOT remove the array entry node.
 func TestDeleteSlash8WithChildren(t *testing.T) {
-	router := rib.NewIPv4Rib()
+	router := rib.NewIPv4Rib(nil)
 
 	router.Insert(rib.Route{Prefix: netip.MustParsePrefix("10.0.0.0/8")})
 	router.Insert(rib.Route{Prefix: netip.MustParsePrefix("10.1.1.0/24")})
@@ -631,8 +631,8 @@ func TestDeleteSlash8WithChildren(t *testing.T) {
 }
 
 func TestFullTable(t *testing.T) {
-	router4 := rib.NewIPv4Rib()
-	router6 := rib.NewIPv6Rib()
+	router4 := rib.NewIPv4Rib(nil)
+	router6 := rib.NewIPv6Rib(nil)
 
 	// IPv6
 	f, err := os.Open("testdata/v6.txt")
@@ -706,8 +706,8 @@ func TestFullTable(t *testing.T) {
 
 // TestReset verifies that Reset cleanly empties the entire RIB.
 func TestReset(t *testing.T) {
-	router4 := rib.NewIPv4Rib()
-	router6 := rib.NewIPv6Rib()
+	router4 := rib.NewIPv4Rib(nil)
+	router6 := rib.NewIPv6Rib(nil)
 	router4.Insert(rib.Route{Prefix: netip.MustParsePrefix("10.0.0.0/8")})
 	router6.Insert(rib.Route{Prefix: netip.MustParsePrefix("2001:db8::/32")})
 
@@ -732,8 +732,8 @@ func TestReset(t *testing.T) {
 
 // TestBatchOperations verifies batch insert and batch delete operations.
 func TestBatchOperations(t *testing.T) {
-	router4 := rib.NewIPv4Rib()
-	router6 := rib.NewIPv6Rib()
+	router4 := rib.NewIPv4Rib(nil)
+	router6 := rib.NewIPv6Rib(nil)
 
 	v4Batch := []netip.Prefix{
 		netip.MustParsePrefix("10.0.0.0/8"),
@@ -771,8 +771,8 @@ func TestBatchOperations(t *testing.T) {
 
 // TestConcurrentV4V6Independence verifies that v4 operations don't block v6 operations.
 func TestConcurrentV4V6Independence(t *testing.T) {
-	router4 := rib.NewIPv4Rib()
-	router6 := rib.NewIPv6Rib()
+	router4 := rib.NewIPv4Rib(nil)
+	router6 := rib.NewIPv6Rib(nil)
 
 	done := make(chan struct{})
 	go func() {
@@ -796,7 +796,7 @@ func TestConcurrentV4V6Independence(t *testing.T) {
 // TestConcurrentInsertAndSearch verifies safety of concurrent reads and writes
 // to the same address family.
 func TestConcurrentInsertAndSearch(t *testing.T) {
-	router := rib.NewIPv4Rib()
+	router := rib.NewIPv4Rib(nil)
 
 	done := make(chan struct{})
 	go func() {
@@ -816,7 +816,7 @@ func TestConcurrentInsertAndSearch(t *testing.T) {
 
 // TestResetWithConcurrentReads verifies safety of Reset while reads are in flight.
 func TestResetWithConcurrentReads(t *testing.T) {
-	router := rib.NewIPv4Rib()
+	router := rib.NewIPv4Rib(nil)
 	router.Insert(rib.Route{Prefix: netip.MustParsePrefix("10.0.0.0/8")})
 
 	done := make(chan struct{})
@@ -838,7 +838,7 @@ func TestResetWithConcurrentReads(t *testing.T) {
 // TestAttributeUpdate verifies that inserting a route for an existing prefix
 // updates its attributes in place without incrementing the prefix count.
 func TestAttributeUpdate(t *testing.T) {
-	router := rib.NewIPv4Rib()
+	router := rib.NewIPv4Rib(nil)
 
 	prefix := netip.MustParsePrefix("192.168.1.0/24")
 
@@ -886,7 +886,7 @@ func TestAttributeUpdate(t *testing.T) {
 // TestAttributeDeduplication verifies that inserting multiple prefixes with the same attributes
 // results in a single deep-copied attribute struct being shared via reference counting.
 func TestAttributeDeduplication(t *testing.T) {
-	router := rib.NewIPv4Rib()
+	router := rib.NewIPv4Rib(nil)
 
 	attr := &rib.RouteAttributes{
 		AsPath:      []uint32{100, 200, 300},
@@ -920,7 +920,7 @@ func TestAttributeDeduplication(t *testing.T) {
 // TestAttributeGarbageCollection verifies that when prefixes are deleted or updated,
 // the old attributes are properly released.
 func TestAttributeGarbageCollection(t *testing.T) {
-	router := rib.NewIPv4Rib()
+	router := rib.NewIPv4Rib(nil)
 	prefix := netip.MustParsePrefix("10.0.0.0/24")
 
 	attr1 := &rib.RouteAttributes{LocalPref: 100}
@@ -940,7 +940,7 @@ func TestAttributeGarbageCollection(t *testing.T) {
 // TestLookupIPv4ExactMatch verifies that Lookup returns a route only
 // when the exact prefix and mask length exists in the RIB.
 func TestLookupIPv4ExactMatch(t *testing.T) {
-	router := rib.NewIPv4Rib()
+	router := rib.NewIPv4Rib(nil)
 	routes := []string{"1.0.0.0/8", "1.1.0.0/16", "1.1.1.0/24"}
 	for _, route := range routes {
 		router.Insert(rib.Route{
@@ -982,7 +982,7 @@ func TestLookupIPv4ExactMatch(t *testing.T) {
 // TestLookupIPv6ExactMatch verifies that Lookup returns a route only
 // when the exact prefix and mask length exists in the RIB.
 func TestLookupIPv6ExactMatch(t *testing.T) {
-	router := rib.NewIPv6Rib()
+	router := rib.NewIPv6Rib(nil)
 	routes := []string{"2600::/8", "2600::/32", "2600:1::/48"}
 	for _, route := range routes {
 		router.Insert(rib.Route{
@@ -1023,8 +1023,8 @@ func TestLookupIPv6ExactMatch(t *testing.T) {
 
 // TestLookupCrossAF verifies that Lookup methods reject wrong address families.
 func TestLookupCrossAF(t *testing.T) {
-	router4 := rib.NewIPv4Rib()
-	router6 := rib.NewIPv6Rib()
+	router4 := rib.NewIPv4Rib(nil)
+	router6 := rib.NewIPv6Rib(nil)
 	router4.Insert(rib.Route{Prefix: netip.MustParsePrefix("10.0.0.0/8")})
 	router6.Insert(rib.Route{Prefix: netip.MustParsePrefix("2001:db8::/32")})
 
@@ -1041,7 +1041,7 @@ func TestLookupCrossAF(t *testing.T) {
 
 // TestLookupRejectsOutOfRange verifies that out-of-range masks return nil.
 func TestLookupRejectsOutOfRange(t *testing.T) {
-	router := rib.NewIPv4Rib()
+	router := rib.NewIPv4Rib(nil)
 	router.Insert(rib.Route{Prefix: netip.MustParsePrefix("10.0.0.0/8")})
 
 	// /7 is below minimum
@@ -1053,8 +1053,8 @@ func TestLookupRejectsOutOfRange(t *testing.T) {
 // TestPrefixesByOriginASN verifies that we can retrieve all prefixes originated
 // by a specific ASN using a full trie walk.
 func TestPrefixesByOriginASN(t *testing.T) {
-	router4 := rib.NewIPv4Rib()
-	router6 := rib.NewIPv6Rib()
+	router4 := rib.NewIPv4Rib(nil)
+	router6 := rib.NewIPv6Rib(nil)
 
 	// Prefixes originated by AS 100
 	routes100 := []string{"10.0.0.0/8", "10.1.0.0/16", "2001:db8::/32"}
@@ -1110,7 +1110,7 @@ func TestPrefixesByOriginASN(t *testing.T) {
 
 
 func TestLocalPrefDefaulting(t *testing.T) {
-router := rib.NewIPv4Rib()
+router := rib.NewIPv4Rib(nil)
 prefix := netip.MustParsePrefix("1.1.1.0/24")
 
 // 1. Path with LP 50 (worse than default 100)

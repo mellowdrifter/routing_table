@@ -39,14 +39,14 @@ graph TD
     end
 
     subgraph "3. Path Map (Stored on the Target Node)"
-        PathsMap["paths map[uint32]*RouteAttributes"]:::map
+        PathsMap["paths map[uint32]pathEntry"]:::map
         
-        Path1["PathID: 101"]:::map
-        Path2["PathID: 102"]:::map
-        Path3["PathID: 103"]:::map
-        Path4["PathID: 104"]:::map
-        Path5["PathID: 105"]:::map
-        Path6["PathID: 106"]:::map
+        Path1["PathID: 101<br/>(stale: false)"]:::map
+        Path2["PathID: 102<br/>(stale: false)"]:::map
+        Path3["PathID: 103<br/>(stale: true)"]:::map
+        Path4["PathID: 104<br/>(stale: false)"]:::map
+        Path5["PathID: 105<br/>(stale: false)"]:::map
+        Path6["PathID: 106<br/>(stale: false)"]:::map
         
         Node3 --> PathsMap
         PathsMap --- Path1

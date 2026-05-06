@@ -4,8 +4,8 @@ import (
 	"sync"
 )
 
-// attrTable manages deduplication of RouteAttributes.
-type attrTable struct {
+// AttrTable manages deduplication of RouteAttributes.
+type AttrTable struct {
 	mu      sync.RWMutex
 	entries map[uint64][]*RouteAttributes
 
@@ -13,14 +13,15 @@ type attrTable struct {
 	sliceBytes uint64
 }
 
-func newAttrTable() *attrTable {
-	return &attrTable{
+// NewAttrTable creates and returns a new attribute deduplication table.
+func NewAttrTable() *AttrTable {
+	return &AttrTable{
 		entries: make(map[uint64][]*RouteAttributes),
 	}
 }
 
 // Len returns the number of hash buckets in the attribute table.
-func (at *attrTable) Len() int {
+func (at *AttrTable) Len() int {
 	at.mu.RLock()
 	defer at.mu.RUnlock()
 	return len(at.entries)
@@ -102,7 +103,7 @@ func equalAttributes(a, b *RouteAttributes) bool {
 	return true
 }
 
-func (at *attrTable) getOrInsert(attr *RouteAttributes) *RouteAttributes {
+func (at *AttrTable) getOrInsert(attr *RouteAttributes) *RouteAttributes {
 	if attr == nil {
 		attr = &RouteAttributes{}
 	}
@@ -142,7 +143,7 @@ func (at *attrTable) getOrInsert(attr *RouteAttributes) *RouteAttributes {
 	return copyAttr
 }
 
-func (at *attrTable) release(attr *RouteAttributes) {
+func (at *AttrTable) release(attr *RouteAttributes) {
 	if attr == nil {
 		return
 	}
@@ -167,7 +168,7 @@ func (at *attrTable) release(attr *RouteAttributes) {
 }
 
 // GetStats returns the current number of unique attributes and the bytes used by their slices
-func (at *attrTable) GetStats() (uint64, uint64) {
+func (at *AttrTable) GetStats() (uint64, uint64) {
 	at.mu.RLock()
 	defer at.mu.RUnlock()
 	return at.attrCount, at.sliceBytes

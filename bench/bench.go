@@ -29,7 +29,8 @@ func printMemStats(label string) {
 func main() {
 	printMemStats("baseline")
 
-	router := rib.GetNewRib()
+	v4rib := rib.NewIPv4Rib(nil)
+	v6rib := rib.NewIPv6Rib(nil)
 
 	// IPv6
 	f, err := os.Open("../testdata/v6.txt")
@@ -51,7 +52,7 @@ func main() {
 	}
 	start := time.Now()
 	for _, ip := range fullv6table {
-		router.InsertIPv6(rib.Route{Prefix: ip})
+		v6rib.Insert(rib.Route{Prefix: ip})
 	}
 	fmt.Printf("took %s to insert %d IPv6 prefixes\n", time.Since(start), len(fullv6table))
 	f.Close()
@@ -75,12 +76,18 @@ func main() {
 	}
 	start = time.Now()
 	for _, ip := range fulltable {
-		router.InsertIPv4(rib.Route{Prefix: ip})
+		v4rib.Insert(rib.Route{Prefix: ip})
 	}
 	fmt.Printf("took %s to insert %d IPv4 prefixes\n\n", time.Since(start), len(fulltable))
 
 	printMemStats("after insert")
-	router.PrintRib()
+	v4rib.PrintRib()
+
+	// Graceful Restart Period
+	fmt.Println("--- Starting Graceful Restart Period ---")
+	v4rib.MarkAllStale()
+	v6rib.MarkAllStale()
+	printMemStats("during GR (stale)")
 
 	lookups := []netip.Addr{
 		netip.MustParseAddr("1.1.1.1"),
@@ -88,9 +95,9 @@ func main() {
 		netip.MustParseAddr("8.8.8.8"),
 	}
 	for _, l := range lookups {
-		lpm := router.SearchIPv4(l)
+		lpm := v4rib.Search(l)
 		if lpm != nil {
-			fmt.Printf("lpm for %s is %s\n", l.String(), lpm.Prefix.String())
+			fmt.Printf("lpm for %s is %s (stale: %v)\n", l.String(), lpm.Prefix.String(), lpm.Stale)
 		} else {
 			fmt.Printf("lpm for %s is <nil>\n", l.String())
 		}
@@ -100,9 +107,9 @@ func main() {
 		netip.MustParseAddr("2606:4700:4700::1001"),
 	}
 	for _, l := range lookups6 {
-		lpm := router.SearchIPv6(l)
+		lpm := v6rib.Search(l)
 		if lpm != nil {
-			fmt.Printf("lpm for %s is %s\n", l.String(), lpm.Prefix.String())
+			fmt.Printf("lpm for %s is %s (stale: %v)\n", l.String(), lpm.Prefix.String(), lpm.Stale)
 		} else {
 			fmt.Printf("lpm for %s is <nil>\n", l.String())
 		}
@@ -130,7 +137,7 @@ func main() {
 	}
 	start = time.Now()
 	for _, ip := range fullv6table2 {
-		router.DeleteIPv6(ip, 0)
+		v6rib.Delete(ip, 0)
 	}
 	fmt.Printf("took %s to delete %d IPv6 prefixes\n", time.Since(start), len(fullv6table2))
 	f.Close()
@@ -155,11 +162,11 @@ func main() {
 	}
 	start = time.Now()
 	for _, ip := range fullv4table2 {
-		router.DeleteIPv4(ip, 0)
+		v4rib.Delete(ip, 0)
 	}
 	fmt.Printf("took %s to delete %d IPv4 prefixes\n", time.Since(start), len(fullv4table2))
 	f.Close()
 
 	printMemStats("after delete")
-	router.PrintRib()
+	v4rib.PrintRib()
 }
