@@ -12,6 +12,19 @@ import (
 	"time"
 )
 
+// v4Filter is a bitmask for valid public IPv4 first octets (1-9, 11-126, 128-223).
+// Bit 0 corresponds to value 0.
+var v4Filter = [4]uint64{
+	0xfffffffffffffbfe, // Bits 0-63: all 1s except 0, 10
+	0x7fffffffffffffff, // Bits 64-127: all 1s except 127
+	0xffffffffffffffff, // Bits 128-191: all 1s
+	0x00000000ffffffff, // Bits 192-255: all 1s for 192-223, 0s for 224-255
+}
+
+func isValidV4(octet byte) bool {
+	return v4Filter[octet>>6]&(uint64(1)<<(octet&63)) != 0
+}
+
 // IPv4Rib represents an IPv4 Routing Information Base.
 type IPv4Rib struct {
 	mu *sync.RWMutex
@@ -651,6 +664,11 @@ func (r *IPv4Rib) insertUnlocked(route Route) bool {
 	}
 
 	addr := route.Prefix.Addr().As4()
+
+	// Fast bogon pre-filter for the first octet.
+	if !isValidV4(addr[0]) {
+		return false
+	}
 
 	// Retrieve or create the deduplicated attributes
 	dedupAttr := r.attrTable.getOrInsert(route.Attributes)
@@ -1760,7 +1778,8 @@ func (r *IPv6Rib) StartLogging(ctx context.Context) {
 func (r *IPv4Rib) PrefixesByOriginASN(asn uint32) (results []Route) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	for i := 0; i < 256; i++ {
+	// Max valid public IPv4 first octet is 223.
+	for i := 0; i < 224; i++ {
 		if r.root[i] != nil {
 			var addr [4]byte
 			addr[0] = byte(i)
@@ -1790,7 +1809,8 @@ func (r *IPv6Rib) PrefixesByOriginASN(asn uint32) (results []Route) {
 func (r *IPv4Rib) PrefixesByAsPathRegex(re *regexp.Regexp) (results []Route) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	for i := 0; i < 256; i++ {
+	// Max valid public IPv4 first octet is 223.
+	for i := 0; i < 224; i++ {
 		if r.root[i] != nil {
 			var addr [4]byte
 			addr[0] = byte(i)
@@ -1824,7 +1844,8 @@ func (r *IPv4Rib) AllPrefixes() []netip.Prefix {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
-	for i := 0; i < 256; i++ {
+	// Max valid public IPv4 first octet is 223.
+	for i := 0; i < 224; i++ {
 		if r.root[i] != nil {
 			var addr [4]byte
 			addr[0] = byte(i)
@@ -2040,7 +2061,8 @@ func collectByAsPathRegexV6(n *node, re *regexp.Regexp, addr [16]byte, depth int
 func (r *IPv4Rib) PrefixesByCommunity(comm uint32) (results []Route) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	for i := 0; i < 256; i++ {
+	// Max valid public IPv4 first octet is 223.
+	for i := 0; i < 224; i++ {
 		if r.root[i] != nil {
 			var addr [4]byte
 			addr[0] = byte(i)
@@ -2138,7 +2160,7 @@ func collectByCommunityV6(n *node, comm uint32, addr [16]byte, depth int, result
 func (r *IPv4Rib) PrefixesByLargeCommunity(lc LargeCommunity) (results []Route) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	for i := 0; i < 256; i++ {
+	for i := 0; i < 224; i++ {
 		if r.root[i] != nil {
 			var addr [4]byte
 			addr[0] = byte(i)
