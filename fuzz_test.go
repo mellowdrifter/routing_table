@@ -2,30 +2,45 @@ package routing_table
 
 import (
 	"encoding/binary"
+	"fmt"
 	"net/netip"
 	"sort"
 	"testing"
 )
 
 // referenceModel is a simple map-based RIB for differential fuzzing.
+//
+// Paths per prefix are kept in an ordered slice that mirrors node.go: the
+// inline path first, then the Add-Path overflow in insertion order. Order
+// matters because node.setPath reuses the FIRST stale slot (inline, then
+// extra) for a new PathID during Graceful Restart; a map cannot express that.
 type referenceModel struct {
-	// prefix -> pathID -> Route
-	data map[netip.Prefix]map[uint32]Route
+	data map[netip.Prefix][]Route
 }
 
 func newReferenceModel() *referenceModel {
 	return &referenceModel{
-		data: make(map[netip.Prefix]map[uint32]Route),
+		data: make(map[netip.Prefix][]Route),
 	}
 }
 
+// insert mirrors node.setPath: replace an exact PathID match; otherwise reuse
+// the first stale path's slot (changing its PathID); otherwise append.
 func (m *referenceModel) insert(r Route) {
-	paths, ok := m.data[r.Prefix]
-	if !ok {
-		paths = make(map[uint32]Route)
-		m.data[r.Prefix] = paths
+	paths := m.data[r.Prefix]
+	for i := range paths {
+		if paths[i].PathID == r.PathID {
+			paths[i] = r
+			return
+		}
 	}
-	paths[r.PathID] = r
+	for i := range paths {
+		if paths[i].Stale {
+			paths[i] = r
+			return
+		}
+	}
+	m.data[r.Prefix] = append(paths, r)
 }
 
 func (m *referenceModel) delete(p netip.Prefix, pathID uint32) {
@@ -33,36 +48,80 @@ func (m *referenceModel) delete(p netip.Prefix, pathID uint32) {
 	if !ok {
 		return
 	}
-	delete(paths, pathID)
+	for i := range paths {
+		if paths[i].PathID == pathID {
+			paths = append(paths[:i], paths[i+1:]...)
+			break
+		}
+	}
 	if len(paths) == 0 {
 		delete(m.data, p)
+		return
 	}
+	m.data[p] = paths
 }
 
 func (m *referenceModel) markAllStale() {
-	for pfx, paths := range m.data {
-		for id, route := range paths {
-			route.Stale = true
-			paths[id] = route
+	for _, paths := range m.data {
+		for i := range paths {
+			paths[i].Stale = true
 		}
-		m.data[pfx] = paths
 	}
 }
 
+// deleteStale removes stale paths and returns prefixes that lost their last path.
 func (m *referenceModel) deleteStale() []netip.Prefix {
 	var removed []netip.Prefix
 	for pfx, paths := range m.data {
-		for id, route := range paths {
-			if route.Stale {
-				delete(paths, id)
+		kept := paths[:0]
+		for _, route := range paths {
+			if !route.Stale {
+				kept = append(kept, route)
 			}
 		}
-		if len(paths) == 0 {
+		if len(kept) == 0 {
 			delete(m.data, pfx)
 			removed = append(removed, pfx)
+		} else {
+			m.data[pfx] = kept
 		}
 	}
 	return removed
+}
+
+// comparePaths checks every prefix's paths (PathID, Stale, LocalPref) against
+// the RIB, independent of ordering.
+func (m *referenceModel) comparePaths(t *testing.T, ribPaths func(netip.Prefix) []Route) {
+	t.Helper()
+	key := func(rs []Route) []string {
+		out := make([]string, len(rs))
+		for i, r := range rs {
+			out[i] = fmt.Sprintf("%d/%v/%d", r.PathID, r.Stale, r.Attributes.LocalPref)
+		}
+		sort.Strings(out)
+		return out
+	}
+	for pfx, want := range m.data {
+		if g, w := key(ribPaths(pfx)), key(want); fmt.Sprint(g) != fmt.Sprint(w) {
+			t.Errorf("paths mismatch for %s: rib=%v ref=%v", pfx, g, w)
+		}
+	}
+}
+
+// comparePrefixSets fails unless both prefix lists contain the same prefixes.
+func comparePrefixSets(t *testing.T, got, want []netip.Prefix) {
+	t.Helper()
+	str := func(ps []netip.Prefix) []string {
+		out := make([]string, len(ps))
+		for i, p := range ps {
+			out[i] = p.String()
+		}
+		sort.Strings(out)
+		return out
+	}
+	if g, w := str(got), str(want); fmt.Sprint(g) != fmt.Sprint(w) {
+		t.Errorf("DeleteStale removed prefixes mismatch:\n got %v\nwant %v", g, w)
+	}
 }
 
 func (m *referenceModel) lpm(ip netip.Addr) *Route {
@@ -108,6 +167,12 @@ func (m *referenceModel) lookup(p netip.Prefix) []Route {
 
 func FuzzIPv4Rib(f *testing.F) {
 	f.Add([]byte{0, 1, 1, 1, 0, 24, 0, 0, 0, 1, 0, 0, 0, 100})
+	// seed: stale slot reused by a new PathID
+	f.Add([]byte{0, 11, 0, 0, 0, 24, 0, 0, 0, 1, 0, 0, 0, 100, 3, 0, 11, 0, 0, 0, 24, 0, 0, 0, 2, 0, 0, 0, 100, 4})
+	// seed: Add-Path: first stale slot replaced, other stale path deleted
+	f.Add([]byte{0, 11, 0, 0, 0, 24, 0, 0, 0, 1, 0, 0, 0, 100, 0, 11, 0, 0, 0, 24, 0, 0, 0, 2, 0, 0, 0, 100, 3, 0, 11, 0, 0, 0, 24, 0, 0, 0, 3, 0, 0, 0, 100, 4, 1, 11, 0, 0, 0, 24, 0, 0, 0, 3})
+	// seed: stale flush of everything
+	f.Add([]byte{0, 11, 0, 0, 0, 24, 0, 0, 0, 1, 0, 0, 0, 100, 0, 11, 0, 0, 0, 24, 0, 0, 0, 2, 0, 0, 0, 200, 3, 4})
 	f.Fuzz(func(t *testing.T, data []byte) {
 		if len(data) < 1 {
 			return
@@ -185,19 +250,12 @@ func FuzzIPv4Rib(f *testing.F) {
 					}
 				}
 
-			/*
 			case 3: // MarkStale
 				rib.MarkAllStale()
 				ref.markAllStale()
 
 			case 4: // DeleteStale
-				gotRemoved := rib.DeleteStaleRoutes()
-				wantRemoved := ref.deleteStale()
-
-				if len(gotRemoved) != len(wantRemoved) {
-					t.Errorf("DeleteStale count mismatch: got %d, want %d", len(gotRemoved), len(wantRemoved))
-				}
-			*/
+				comparePrefixSets(t, rib.DeleteStaleRoutes(), ref.deleteStale())
 
 			case 5: // InsertBatch
 				if pos+1 > len(data) {
@@ -273,15 +331,29 @@ func FuzzIPv4Rib(f *testing.F) {
 			if rib.PathCount() != totalPaths {
 				t.Errorf("PathCount mismatch: rib=%d, ref=%d", rib.PathCount(), totalPaths)
 			}
+			ref.comparePaths(t, rib.AllPaths)
 			if rib.AttributeCount() != len(uniqueAttrs) {
 				t.Errorf("AttributeCount mismatch: rib=%d, ref=%d", rib.AttributeCount(), len(uniqueAttrs))
 			}
+		}
+
+		// Flushing must release every attribute reference (no leak, no underflow).
+		rib.MarkAllStale()
+		rib.DeleteStaleRoutes()
+		if rib.Count() != 0 || rib.PathCount() != 0 || rib.AttributeCount() != 0 {
+			t.Errorf("after full stale flush: count=%d paths=%d attrs=%d", rib.Count(), rib.PathCount(), rib.AttributeCount())
 		}
 	})
 }
 
 func FuzzIPv6Rib(f *testing.F) {
 	f.Add([]byte{0, 0x20, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 48, 0, 0, 0, 1, 0, 0, 0, 100})
+	// seed: stale slot reused by a new PathID
+	f.Add([]byte{0, 32, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 48, 0, 0, 0, 1, 0, 0, 0, 100, 3, 0, 32, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 48, 0, 0, 0, 2, 0, 0, 0, 100, 4})
+	// seed: Add-Path: first stale slot replaced, other stale path deleted
+	f.Add([]byte{0, 32, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 48, 0, 0, 0, 1, 0, 0, 0, 100, 0, 32, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 48, 0, 0, 0, 2, 0, 0, 0, 100, 3, 0, 32, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 48, 0, 0, 0, 3, 0, 0, 0, 100, 4, 1, 32, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 48, 0, 0, 0, 3})
+	// seed: stale flush of everything
+	f.Add([]byte{0, 32, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 48, 0, 0, 0, 1, 0, 0, 0, 100, 0, 32, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 48, 0, 0, 0, 2, 0, 0, 0, 200, 3, 4})
 	f.Fuzz(func(t *testing.T, data []byte) {
 		if len(data) < 1 {
 			return
@@ -366,19 +438,12 @@ func FuzzIPv6Rib(f *testing.F) {
 					}
 				}
 
-			/*
 			case 3: // MarkStale
 				rib.MarkAllStale()
 				ref.markAllStale()
 
 			case 4: // DeleteStale
-				gotRemoved := rib.DeleteStaleRoutes()
-				wantRemoved := ref.deleteStale()
-
-				if len(gotRemoved) != len(wantRemoved) {
-					t.Errorf("DeleteStale count mismatch: got %d, want %d", len(gotRemoved), len(wantRemoved))
-				}
-			*/
+				comparePrefixSets(t, rib.DeleteStaleRoutes(), ref.deleteStale())
 
 			case 5: // InsertBatch
 				if pos+1 > len(data) {
@@ -457,9 +522,17 @@ func FuzzIPv6Rib(f *testing.F) {
 			if rib.PathCount() != totalPaths {
 				t.Errorf("PathCount mismatch: rib=%d, ref=%d", rib.PathCount(), totalPaths)
 			}
+			ref.comparePaths(t, rib.AllPaths)
 			if rib.AttributeCount() != len(uniqueAttrs) {
 				t.Errorf("AttributeCount mismatch: rib=%d, ref=%d", rib.AttributeCount(), len(uniqueAttrs))
 			}
+		}
+
+		// Flushing must release every attribute reference (no leak, no underflow).
+		rib.MarkAllStale()
+		rib.DeleteStaleRoutes()
+		if rib.Count() != 0 || rib.PathCount() != 0 || rib.AttributeCount() != 0 {
+			t.Errorf("after full stale flush: count=%d paths=%d attrs=%d", rib.Count(), rib.PathCount(), rib.AttributeCount())
 		}
 	})
 }

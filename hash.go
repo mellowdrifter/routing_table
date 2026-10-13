@@ -137,6 +137,7 @@ func (at *AttrTable) getOrInsert(attr *RouteAttributes) *RouteAttributes {
 		copyAttr.LargeCommunities = make([]LargeCommunity, len(attr.LargeCommunities))
 		copy(copyAttr.LargeCommunities, attr.LargeCommunities)
 	}
+	copyAttr.asPathStr = formatASPath(copyAttr.AsPath)
 
 	at.entries[h] = append(at.entries[h], copyAttr)
 	at.attrCount++
@@ -229,6 +230,38 @@ func (at *AttrTable) releaseTree(roots []*node) {
 		counts[last] += lastN
 	}
 	at.releaseN(counts)
+}
+
+// attrTally accumulates attribute releases during a walk so they can be applied
+// to the AttrTable in one batch (see releaseN) instead of one lock per path.
+// The zero value is ready to use. Not safe for concurrent use.
+type attrTally struct {
+	counts map[*RouteAttributes]int
+	last   *RouteAttributes
+	lastN  int
+}
+
+func (t *attrTally) add(a *RouteAttributes) {
+	if a == nil {
+		return
+	}
+	if t.counts == nil {
+		t.counts = make(map[*RouteAttributes]int)
+	}
+	tallyAttr(a, t.counts, &t.last, &t.lastN)
+}
+
+// release flushes the tally into at. Call it after dropping any trie lock.
+func (t *attrTally) release(at *AttrTable) {
+	if t.counts == nil {
+		return
+	}
+	if t.last != nil {
+		t.counts[t.last] += t.lastN
+		t.last, t.lastN = nil, 0
+	}
+	at.releaseN(t.counts)
+	t.counts = nil
 }
 
 func tallyAttr(attr *RouteAttributes, counts map[*RouteAttributes]int, last **RouteAttributes, lastN *int) {

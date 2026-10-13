@@ -3,6 +3,7 @@ package routing_table
 import (
 	"fmt"
 	"net/netip"
+	"regexp"
 	"strconv"
 	"strings"
 )
@@ -24,6 +25,11 @@ type RouteAttributes struct {
 	hash       uint64
 	LocalPref  uint32
 	refCount   uint32
+
+	// asPathStr caches ASPathString. It is set once by AttrTable.getOrInsert
+	// before the pointer is shared and never written afterwards, so concurrent
+	// readers need no synchronisation. It is not part of hash/equality.
+	asPathStr string
 }
 
 // ASPathString returns the AS path as a space-separated string.
@@ -31,11 +37,80 @@ func (ra *RouteAttributes) ASPathString() string {
 	if len(ra.AsPath) == 0 {
 		return ""
 	}
-	parts := make([]string, len(ra.AsPath))
-	for i, asn := range ra.AsPath {
+	if ra.asPathStr != "" {
+		return ra.asPathStr
+	}
+	return formatASPath(ra.AsPath)
+}
+
+func formatASPath(asPath []uint32) string {
+	if len(asPath) == 0 {
+		return ""
+	}
+	parts := make([]string, len(asPath))
+	for i, asn := range asPath {
 		parts[i] = strconv.FormatUint(uint64(asn), 10)
 	}
 	return strings.Join(parts, " ")
+}
+
+// originIs reports whether the last AS in the path equals asn.
+func originIs(a *RouteAttributes, asn uint32) bool {
+	return a != nil && len(a.AsPath) > 0 && a.AsPath[len(a.AsPath)-1] == asn
+}
+
+func hasCommunity(a *RouteAttributes, comm uint32) bool {
+	if a == nil {
+		return false
+	}
+	for _, c := range a.Communities {
+		if c == comm {
+			return true
+		}
+	}
+	return false
+}
+
+func hasLargeCommunity(a *RouteAttributes, lc LargeCommunity) bool {
+	if a == nil {
+		return false
+	}
+	for _, c := range a.LargeCommunities {
+		if c == lc {
+			return true
+		}
+	}
+	return false
+}
+
+// asPathMatcher evaluates a regexp against AS paths once per unique attribute
+// pointer. Attributes are deduplicated, so a full table has far fewer unique
+// attribute sets than paths. A matcher is per-query and not concurrency-safe.
+type asPathMatcher struct {
+	re     *regexp.Regexp
+	memo   map[*RouteAttributes]bool
+	last   *RouteAttributes
+	lastOK bool
+}
+
+func newASPathMatcher(re *regexp.Regexp) *asPathMatcher {
+	return &asPathMatcher{re: re, memo: make(map[*RouteAttributes]bool)}
+}
+
+func (m *asPathMatcher) match(a *RouteAttributes) bool {
+	if a == nil {
+		return false
+	}
+	if a == m.last {
+		return m.lastOK
+	}
+	ok, seen := m.memo[a]
+	if !seen {
+		ok = m.re.MatchString(a.ASPathString())
+		m.memo[a] = ok
+	}
+	m.last, m.lastOK = a, ok
+	return ok
 }
 
 // Route represents an entry in the RIB.

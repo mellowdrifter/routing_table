@@ -136,6 +136,23 @@ func (n *node) allPaths() []pathEntry {
 	return res
 }
 
+// firstStalePathID returns the pathID of any stale path on the node without
+// allocating. Callers delete it and call again until ok is false.
+func (n *node) firstStalePathID() (uint32, bool) {
+	if !n.hasPath() {
+		return 0, false
+	}
+	if n.isStale() {
+		return n.pathID, true
+	}
+	for i := range n.extra {
+		if n.extra[i].stale {
+			return n.extra[i].pathID, true
+		}
+	}
+	return 0, false
+}
+
 func (n *node) deletePath(pathID uint32) (*RouteAttributes, bool) {
 	if !n.hasPath() {
 		return nil, false

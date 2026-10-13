@@ -1,1 +1,8 @@
 # .gitignore
+
+# build artifacts
+/bench/bench
+*.test
+*.out
+*.prof
+coverage.out

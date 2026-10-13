@@ -353,56 +353,71 @@ func (r *IPv6Rib) deleteUnlocked(prefix netip.Prefix, pathID uint32) bool {
 // DeleteStaleRoutes removes all stale paths from the RIB.
 // Returns a slice of prefixes that were completely removed from the RIB (went from 1 to 0 paths).
 func (r *IPv6Rib) DeleteStaleRoutes() []netip.Prefix {
-	r.mu.Lock()
-	defer r.mu.Unlock()
+	var tally attrTally
+	removed := func() []netip.Prefix {
+		r.mu.Lock()
+		defer r.mu.Unlock()
 
-	var removed []netip.Prefix
-	for i, n := range r.root {
-		if n != nil {
-			ipBytes := make([]byte, 16)
-			ipBytes[0] = byte(i + 0x20)
-			r.deleteStaleFromNode(n, ipBytes, 8, &removed)
+		var removed []netip.Prefix
+		for i, n := range r.root {
+			if n != nil {
+				var addr [16]byte
+				addr[0] = byte(i + 0x20)
+				r.deleteStaleFromNode(n, addr, 8, &removed, &tally)
 
-			// Clean up root entry if empty
-			if r.root[i].children[0] == nil && r.root[i].children[1] == nil && !r.root[i].hasPath() {
-				r.root[i] = nil
-				r.nodeCount--
+				// Clean up root entry if empty
+				if r.root[i].children[0] == nil && r.root[i].children[1] == nil && !r.root[i].hasPath() {
+					r.root[i] = nil
+					r.nodeCount--
+				}
 			}
 		}
-	}
+		return removed
+	}()
+
+	// Attribute refs are dropped in one batch after r.mu is released. The
+	// removed paths still hold their refs until now, so no attribute can be
+	// purged early; lock order stays r.mu -> at.mu (never at.mu -> r.mu).
+	tally.release(r.attrTable)
 	return removed
 }
 
-func (r *IPv6Rib) deleteStaleFromNode(n *node, ipBytes []byte, depth int, removed *[]netip.Prefix) {
+// deleteStaleFromNode must be called with r.mu held for writing. addr is passed
+// by value so the traversal does not allocate.
+func (r *IPv6Rib) deleteStaleFromNode(n *node, addr [16]byte, depth int, removed *[]netip.Prefix, tally *attrTally) {
 	// children first
 	for bit := 0; bit < 2; bit++ {
 		if n.children[bit] != nil {
-			newIpBytes := make([]byte, len(ipBytes))
-			copy(newIpBytes, ipBytes)
+			nextAddr := addr
 			byteIdx := depth / 8
 			bitIdx := 7 - (depth % 8)
 			if bit == 1 {
-				newIpBytes[byteIdx] |= (1 << bitIdx)
+				nextAddr[byteIdx] |= (1 << bitIdx)
 			}
-			r.deleteStaleFromNode(n.children[bit], newIpBytes, depth+1, removed)
+			r.deleteStaleFromNode(n.children[bit], nextAddr, depth+1, removed, tally)
 		}
 	}
 
-	paths := n.allPaths()
-	for _, entry := range paths {
-		if entry.stale {
-			oldAttrs, _ := n.deletePath(entry.pathID)
-			r.attrTable.release(oldAttrs)
-			r.pathCount--
-
-			if !n.hasPath() {
-				r.count--
-				r.masks[depth]--
-				addr, _ := netip.AddrFromSlice(ipBytes)
-				*removed = append(*removed, netip.PrefixFrom(addr, depth))
-				r.nodeCount -= deleteNode(n)
-			}
+	deleted := false
+	for {
+		pathID, ok := n.firstStalePathID()
+		if !ok {
+			break
 		}
+		oldAttrs, found := n.deletePath(pathID)
+		if !found {
+			break // cannot happen; guards against an infinite loop
+		}
+		tally.add(oldAttrs)
+		r.pathCount--
+		deleted = true
+	}
+
+	if deleted && !n.hasPath() {
+		r.count--
+		r.masks[depth]--
+		*removed = append(*removed, netip.PrefixFrom(netip.AddrFrom16(addr), depth))
+		r.nodeCount -= deleteNode(n)
 	}
 }
 
@@ -692,32 +707,34 @@ func (r *IPv6Rib) StartLogging(ctx context.Context) {
 	}()
 }
 
-// PrefixesByOriginASN walks the entire RIB and returns all routes whose origin ASN
-// (last element in the AS path) matches the given ASN.
-func (r *IPv6Rib) PrefixesByOriginASN(asn uint32) (results []Route) {
+// prefixesMatching walks the entire RIB under a read lock and returns every
+// path whose attributes satisfy match. The walk is allocation-free apart from
+// the result slice, and match is evaluated on each path's attributes directly.
+func (r *IPv6Rib) prefixesMatching(match func(*RouteAttributes) bool) (results []Route) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	for i := 0; i < 32; i++ {
 		if r.root[i] != nil {
 			var addr [16]byte
 			addr[0] = byte(i + 0x20)
-			collectByOriginV6(r.root[i], asn, addr, 8, &results)
+			collectMatchingV6(r.root[i], match, addr, 8, &results)
 		}
 	}
 	return results
 }
 
-func collectByOriginV6(n *node, asn uint32, addr [16]byte, depth int, results *[]Route) {
-	paths := n.allPaths()
-	for _, entry := range paths {
-		attrs := entry.attrs
-		if len(attrs.AsPath) > 0 && attrs.AsPath[len(attrs.AsPath)-1] == asn {
-			*results = append(*results, Route{
-				Prefix:     netip.PrefixFrom(netip.AddrFrom16(addr), depth),
-				Attributes: attrs,
-				PathID:     entry.pathID,
-				Stale:      entry.stale,
-			})
+func collectMatchingV6(n *node, match func(*RouteAttributes) bool, addr [16]byte, depth int, results *[]Route) {
+	if n.hasPath() {
+		var prefix netip.Prefix
+		prefix = netip.PrefixFrom(netip.AddrFrom16(addr), depth)
+		if match(n.attrs) {
+			*results = append(*results, Route{Prefix: prefix, Attributes: n.attrs, PathID: n.pathID, Stale: n.isStale()})
+		}
+		for i := range n.extra {
+			e := &n.extra[i]
+			if match(e.attrs) {
+				*results = append(*results, Route{Prefix: prefix, Attributes: e.attrs, PathID: e.pathID, Stale: e.stale})
+			}
 		}
 	}
 
@@ -733,55 +750,33 @@ func collectByOriginV6(n *node, asn uint32, addr [16]byte, depth int, results *[
 			if bit == 1 {
 				nextAddr[byteIdx] |= 1 << bitPos
 			}
-			collectByOriginV6(n.children[bit], asn, nextAddr, depth+1, results)
+			collectMatchingV6(n.children[bit], match, nextAddr, depth+1, results)
 		}
 	}
+}
+
+// PrefixesByOriginASN walks the entire RIB and returns all routes whose origin ASN
+// (last element in the AS path) matches the given ASN.
+func (r *IPv6Rib) PrefixesByOriginASN(asn uint32) []Route {
+	return r.prefixesMatching(func(a *RouteAttributes) bool { return originIs(a, asn) })
 }
 
 // PrefixesByAsPathRegex walks the entire RIB and returns all routes whose AS path
 // matches the given regular expression.
-func (r *IPv6Rib) PrefixesByAsPathRegex(re *regexp.Regexp) (results []Route) {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	for i := 0; i < 32; i++ {
-		if r.root[i] != nil {
-			var addr [16]byte
-			addr[0] = byte(i + 0x20)
-			collectByAsPathRegexV6(r.root[i], re, addr, 8, &results)
-		}
-	}
-	return results
+func (r *IPv6Rib) PrefixesByAsPathRegex(re *regexp.Regexp) []Route {
+	return r.prefixesMatching(newASPathMatcher(re).match)
 }
 
-func collectByAsPathRegexV6(n *node, re *regexp.Regexp, addr [16]byte, depth int, results *[]Route) {
-	paths := n.allPaths()
-	for _, entry := range paths {
-		attrs := entry.attrs
-		if re.MatchString(attrs.ASPathString()) {
-			*results = append(*results, Route{
-				Prefix:     netip.PrefixFrom(netip.AddrFrom16(addr), depth),
-				Attributes: attrs,
-				PathID:     entry.pathID,
-				Stale:      entry.stale,
-			})
-		}
-	}
+// PrefixesByCommunity walks the entire RIB and returns all routes that carry
+// the specified standard community.
+func (r *IPv6Rib) PrefixesByCommunity(comm uint32) []Route {
+	return r.prefixesMatching(func(a *RouteAttributes) bool { return hasCommunity(a, comm) })
+}
 
-	if depth >= 48 {
-		return
-	}
-
-	for bit := 0; bit < 2; bit++ {
-		if n.children[bit] != nil {
-			nextAddr := addr
-			byteIdx := depth / 8
-			bitPos := uint(7 - (depth % 8))
-			if bit == 1 {
-				nextAddr[byteIdx] |= 1 << bitPos
-			}
-			collectByAsPathRegexV6(n.children[bit], re, nextAddr, depth+1, results)
-		}
-	}
+// PrefixesByLargeCommunity walks the entire RIB and returns all routes that carry
+// the specified large community.
+func (r *IPv6Rib) PrefixesByLargeCommunity(lc LargeCommunity) []Route {
+	return r.prefixesMatching(func(a *RouteAttributes) bool { return hasLargeCommunity(a, lc) })
 }
 
 // AllPrefixes returns all IPv6 prefixes currently in the RIB.
@@ -822,104 +817,6 @@ func collectPrefixesV6(n *node, addr [16]byte, depth int, results *[]netip.Prefi
 				nextAddr[byteIdx] |= 1 << bitPos
 			}
 			collectPrefixesV6(n.children[bit], nextAddr, depth+1, results)
-		}
-	}
-}
-
-// PrefixesByCommunity walks the entire RIB and returns all routes that carry
-// the specified standard community.
-func (r *IPv6Rib) PrefixesByCommunity(comm uint32) (results []Route) {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	for i := 0; i < 32; i++ {
-		if r.root[i] != nil {
-			var addr [16]byte
-			addr[0] = byte(i + 0x20)
-			collectByCommunityV6(r.root[i], comm, addr, 8, &results)
-		}
-	}
-	return results
-}
-
-func collectByCommunityV6(n *node, comm uint32, addr [16]byte, depth int, results *[]Route) {
-	paths := n.allPaths()
-	for _, entry := range paths {
-		attrs := entry.attrs
-		for _, c := range attrs.Communities {
-			if c == comm {
-				*results = append(*results, Route{
-					Prefix:     netip.PrefixFrom(netip.AddrFrom16(addr), depth),
-					Attributes: attrs,
-					PathID:     entry.pathID,
-					Stale:      entry.stale,
-				})
-				break
-			}
-		}
-	}
-
-	if depth >= 48 {
-		return
-	}
-
-	for bit := 0; bit < 2; bit++ {
-		if n.children[bit] != nil {
-			nextAddr := addr
-			byteIdx := depth / 8
-			bitPos := uint(7 - (depth % 8))
-			if bit == 1 {
-				nextAddr[byteIdx] |= 1 << bitPos
-			}
-			collectByCommunityV6(n.children[bit], comm, nextAddr, depth+1, results)
-		}
-	}
-}
-
-// PrefixesByLargeCommunity walks the entire RIB and returns all routes that carry
-// the specified large community.
-func (r *IPv6Rib) PrefixesByLargeCommunity(lc LargeCommunity) (results []Route) {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	for i := 0; i < 32; i++ {
-		if r.root[i] != nil {
-			var addr [16]byte
-			addr[0] = byte(i + 0x20)
-			collectByLargeCommunityV6(r.root[i], lc, addr, 8, &results)
-		}
-	}
-	return results
-}
-
-func collectByLargeCommunityV6(n *node, lc LargeCommunity, addr [16]byte, depth int, results *[]Route) {
-	paths := n.allPaths()
-	for _, entry := range paths {
-		attrs := entry.attrs
-		for _, c := range attrs.LargeCommunities {
-			if c.GlobalAdmin == lc.GlobalAdmin && c.LocalData1 == lc.LocalData1 && c.LocalData2 == lc.LocalData2 {
-				*results = append(*results, Route{
-					Prefix:     netip.PrefixFrom(netip.AddrFrom16(addr), depth),
-					Attributes: attrs,
-					PathID:     entry.pathID,
-					Stale:      entry.stale,
-				})
-				break
-			}
-		}
-	}
-
-	if depth >= 48 {
-		return
-	}
-
-	for bit := 0; bit < 2; bit++ {
-		if n.children[bit] != nil {
-			nextAddr := addr
-			byteIdx := depth / 8
-			bitPos := uint(7 - (depth % 8))
-			if bit == 1 {
-				nextAddr[byteIdx] |= 1 << bitPos
-			}
-			collectByLargeCommunityV6(n.children[bit], lc, nextAddr, depth+1, results)
 		}
 	}
 }
