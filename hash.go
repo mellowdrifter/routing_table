@@ -1,6 +1,7 @@
 package routing_table
 
 import (
+	"runtime"
 	"sync"
 )
 
@@ -143,6 +144,21 @@ func (at *AttrTable) getOrInsert(attr *RouteAttributes) *RouteAttributes {
 	return copyAttr
 }
 
+func (at *AttrTable) removeLocked(attr *RouteAttributes) {
+	list := at.entries[attr.hash]
+	for i, existing := range list {
+		if existing == attr { // pointer equality is safe here
+			at.entries[attr.hash] = append(list[:i], list[i+1:]...)
+			if len(at.entries[attr.hash]) == 0 {
+				delete(at.entries, attr.hash)
+			}
+			at.attrCount--
+			at.sliceBytes -= uint64(len(attr.AsPath)*4 + len(attr.Communities)*4 + len(attr.LargeCommunities)*12)
+			return
+		}
+	}
+}
+
 func (at *AttrTable) release(attr *RouteAttributes) {
 	if attr == nil {
 		return
@@ -152,18 +168,98 @@ func (at *AttrTable) release(attr *RouteAttributes) {
 
 	attr.refCount--
 	if attr.refCount == 0 {
-		list := at.entries[attr.hash]
-		for i, existing := range list {
-			if existing == attr { // pointer equality is safe here
-				at.entries[attr.hash] = append(list[:i], list[i+1:]...)
-				if len(at.entries[attr.hash]) == 0 {
-					delete(at.entries, attr.hash)
-				}
-				at.attrCount--
-				at.sliceBytes -= uint64(len(attr.AsPath)*4 + len(attr.Communities)*4 + len(attr.LargeCommunities)*12)
-				return
+		at.removeLocked(attr)
+	}
+}
+
+// releaseN drops n references from each attribute under one lock acquisition.
+// Counts exceeding refCount are clamped to zero (never underflow); in a correct
+// program n == refCount exactly for attributes owned solely by the flushed tree.
+// Large maps are processed in chunks, yielding the lock between chunks so other
+// peers calling getOrInsert are not starved (sync.RWMutex Unlock+Lock alone
+// would usually let this goroutine re-acquire immediately, hence Gosched).
+func (at *AttrTable) releaseN(counts map[*RouteAttributes]int) {
+	if at == nil || len(counts) == 0 {
+		return
+	}
+
+	const chunkSize = 10000
+	const chunkThreshold = 50000
+	chunked := len(counts) > chunkThreshold
+
+	at.mu.Lock()
+	processed := 0
+	for attr, n := range counts {
+		if attr != nil && n > 0 {
+			if uint32(n) >= attr.refCount {
+				attr.refCount = 0
+				at.removeLocked(attr)
+			} else {
+				attr.refCount -= uint32(n)
 			}
 		}
+		if chunked {
+			processed++
+			if processed >= chunkSize {
+				at.mu.Unlock()
+				runtime.Gosched()
+				at.mu.Lock()
+				processed = 0
+			}
+		}
+	}
+	at.mu.Unlock()
+}
+
+// releaseTree releases every attribute reference held by the detached tries
+// rooted at roots. The tries must no longer be reachable from any RIB.
+func (at *AttrTable) releaseTree(roots []*node) {
+	if at == nil {
+		return
+	}
+	counts := make(map[*RouteAttributes]int)
+	var last *RouteAttributes
+	var lastN int
+	for _, n := range roots {
+		if n != nil {
+			collectNodeAttrs(n, counts, &last, &lastN)
+		}
+	}
+	if last != nil {
+		counts[last] += lastN
+	}
+	at.releaseN(counts)
+}
+
+func tallyAttr(attr *RouteAttributes, counts map[*RouteAttributes]int, last **RouteAttributes, lastN *int) {
+	if attr == nil {
+		return
+	}
+	if *last == attr {
+		*lastN++
+		return
+	}
+	if *last != nil {
+		counts[*last] += *lastN
+	}
+	*last = attr
+	*lastN = 1
+}
+
+// collectNodeAttrs walks a detached subtree and tallies attribute refs.
+// It must only be called on a subtree no longer reachable from any RIB.
+func collectNodeAttrs(n *node, counts map[*RouteAttributes]int, last **RouteAttributes, lastN *int) {
+	if n.hasPath() {
+		tallyAttr(n.attrs, counts, last, lastN)
+		for i := range n.extra {
+			tallyAttr(n.extra[i].attrs, counts, last, lastN)
+		}
+	}
+	if n.children[0] != nil {
+		collectNodeAttrs(n.children[0], counts, last, lastN)
+	}
+	if n.children[1] != nil {
+		collectNodeAttrs(n.children[1], counts, last, lastN)
 	}
 }
 

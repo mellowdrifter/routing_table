@@ -74,15 +74,24 @@ func (r *IPv6Rib) markNodeStale(n *node) {
 }
 
 // Reset atomically flushes the entire routing table and resets all counters.
+// Attribute references held by the flushed routes are released before return.
 func (r *IPv6Rib) Reset() {
 	r.mu.Lock()
-	defer r.mu.Unlock()
-
+	oldRoot := r.root
 	r.root = [32]*node{}
 	r.count = 0
 	r.pathCount = 0
 	r.nodeCount = 0
 	r.masks = make(map[int]int)
+	r.mu.Unlock()
+
+	// Concurrency reasoning: after the swap, no reader or writer can reach the
+	// old nodes, because all RIB access is serialized by r.mu. The unlocked walk
+	// is therefore race-free. Lock order is r.mu then at.mu in Insert; the cleaner
+	// takes only at.mu, so there is no deadlock. A concurrent re-announce of
+	// identical attributes only does refCount++ under at.mu. Old-tree refs keep
+	// the count above 0 until releaseN runs, so attributes are never purged prematurely.
+	r.attrTable.releaseTree(oldRoot[:])
 }
 
 func (r *IPv6Rib) PrintRib() {
