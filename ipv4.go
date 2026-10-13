@@ -653,13 +653,13 @@ func (r *IPv4Rib) MemoryUsage() MemoryStats {
 
 	attrCount, sliceBytes := r.attrTable.GetStats()
 
-	// Effective Routing Tables: nodes (32 bytes)
-	rtEffective := nodes * 32
+	// Effective Routing Tables: node structs (excludes Add-Path overflow arrays)
+	rtEffective := nodes * nodeSize
 	// Overhead Routing Tables: IPv4 Root Array (256 * 8) = 2048 bytes
 	rtOverhead := uint64(2048)
 
-	// Effective Route Attributes: RouteAttributes structs (88 bytes) + slice backing arrays
-	raEffective := attrCount*88 + sliceBytes
+	// Effective Route Attributes: RouteAttributes structs + owned slice/string data
+	raEffective := attrCount*routeAttrSize + sliceBytes
 	// Overhead Route Attributes: Go Map overhead (estimate ~48 bytes per entry)
 	raOverhead := attrCount * 48
 

@@ -10,7 +10,10 @@ type AttrTable struct {
 	mu      sync.RWMutex
 	entries map[uint64][]*RouteAttributes
 
-	attrCount  uint64
+	attrCount uint64
+	// sliceBytes counts heap bytes owned by stored attributes beyond the struct
+	// itself: the AsPath/Communities/LargeCommunities backing arrays and the
+	// cached asPathStr data.
 	sliceBytes uint64
 }
 
@@ -141,7 +144,7 @@ func (at *AttrTable) getOrInsert(attr *RouteAttributes) *RouteAttributes {
 
 	at.entries[h] = append(at.entries[h], copyAttr)
 	at.attrCount++
-	at.sliceBytes += uint64(len(copyAttr.AsPath)*4 + len(copyAttr.Communities)*4 + len(copyAttr.LargeCommunities)*12)
+	at.sliceBytes += uint64(len(copyAttr.AsPath)*4 + len(copyAttr.Communities)*4 + len(copyAttr.LargeCommunities)*12 + len(copyAttr.asPathStr))
 	return copyAttr
 }
 
@@ -154,7 +157,7 @@ func (at *AttrTable) removeLocked(attr *RouteAttributes) {
 				delete(at.entries, attr.hash)
 			}
 			at.attrCount--
-			at.sliceBytes -= uint64(len(attr.AsPath)*4 + len(attr.Communities)*4 + len(attr.LargeCommunities)*12)
+			at.sliceBytes -= uint64(len(attr.AsPath)*4 + len(attr.Communities)*4 + len(attr.LargeCommunities)*12 + len(attr.asPathStr))
 			return
 		}
 	}

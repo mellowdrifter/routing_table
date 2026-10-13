@@ -6,6 +6,14 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"unsafe"
+)
+
+// Struct sizes used by MemoryUsage. Derived from the types so they cannot drift
+// when fields are added. These are struct sizes, not allocator size classes.
+const (
+nodeSize      = uint64(unsafe.Sizeof(node{}))
+routeAttrSize = uint64(unsafe.Sizeof(RouteAttributes{}))
 )
 
 // LargeCommunity represents a BGP Large Community (RFC 8092).
